@@ -1,11 +1,14 @@
 /**
  * NodeAvImageDecoder - Node-av based image decoder
  *
- * Decodes still images and animated images (GIF, APNG, WebP) using node-av
+ * Decodes still images and animated images (GIF, APNG) using node-av
  * native bindings instead of spawning FFmpeg CLI processes.
+ *
+ * Note: Animated WebP is NOT supported due to FFmpeg's webp demuxer
+ * skipping ANIM/ANMF chunks. Use FFmpeg CLI fallback for animated WebP.
  */
 
-import { Decoder, FilterAPI } from 'node-av/api';
+import { Decoder, Demuxer, FilterAPI } from 'node-av/api';
 import { FormatContext, Packet, Stream, Rational } from 'node-av/lib';
 import {
   AVMEDIA_TYPE_VIDEO,
@@ -52,11 +55,16 @@ const MIME_TO_CODEC_ID: Record<string, AVCodecID> = {
   'image/avif': AV_CODEC_ID_AV1,
 };
 
+// Formats that require Demuxer for proper multi-frame decoding
+// Note: WebP is excluded because FFmpeg's webp demuxer doesn't support ANIM/ANMF
+const DEMUXER_FORMATS = ['image/gif', 'image/apng'];
+
 /**
  * Decode images using node-av native bindings
  */
 export class NodeAvImageDecoder {
   private decoder: Decoder | null = null;
+  private demuxer: Demuxer | null = null;
   private formatContext: FormatContext | null = null;
   private stream: Stream | null = null;
   private filter: FilterAPI | null = null;
@@ -86,14 +94,27 @@ export class NodeAvImageDecoder {
     }
 
     try {
-      await this.initializeDecoder(codecId);
-      await this.decodeData();
-      await this.flush();
+      if (this.usesDemuxer()) {
+        // Use Demuxer for animated formats (GIF, APNG)
+        await this.decodeWithDemuxer();
+      } else {
+        // Use raw Decoder for static images
+        await this.initializeDecoder(codecId);
+        await this.decodeData();
+        await this.flush();
+      }
     } finally {
       this.cleanup();
     }
 
     return this.frames;
+  }
+
+  /**
+   * Check if this format requires Demuxer for proper decoding
+   */
+  private usesDemuxer(): boolean {
+    return DEMUXER_FORMATS.includes(this.config.mimeType.toLowerCase());
   }
 
   /**
@@ -104,7 +125,152 @@ export class NodeAvImageDecoder {
   }
 
   /**
-   * Initialize the decoder with the given codec
+   * Decode animated images using Demuxer API
+   * This properly parses container formats like GIF and APNG
+   */
+  private async decodeWithDemuxer(): Promise<void> {
+    // Open demuxer from buffer
+    this.demuxer = await Demuxer.open(Buffer.from(this.config.data));
+
+    // Find video stream
+    const videoStream = this.demuxer.streams.find(
+      (s: Stream) => s.codecpar.codecType === AVMEDIA_TYPE_VIDEO
+    );
+
+    if (!videoStream) {
+      throw new Error('No video stream found in image');
+    }
+
+    // Store stream reference and create decoder
+    this.stream = videoStream;
+    this.decoder = await Decoder.create(videoStream, { exitOnError: false });
+
+    // Get time base for duration calculation
+    const timeBase = videoStream.timeBase;
+    const timeBaseNum = timeBase?.num ?? 1;
+    const timeBaseDen = timeBase?.den ?? 1;
+
+    // Read and decode all packets
+    for await (const packet of this.demuxer.packets()) {
+      if (!packet) break;
+
+      if (packet.streamIndex === videoStream.index) {
+        // Calculate timestamp and duration in microseconds
+        const pts = Number(packet.pts ?? 0n);
+        const duration = Number(packet.duration ?? 0n);
+
+        const timestampUs = Math.round((pts * timeBaseNum / timeBaseDen) * 1_000_000);
+        const durationUs = duration > 0
+          ? Math.round((duration * timeBaseNum / timeBaseDen) * 1_000_000)
+          : NodeAvImageDecoder.DEFAULT_FRAME_DURATION;
+
+        // Decode packet
+        await this.decoder.decode(packet);
+
+        // Drain frames
+        let frame = await this.decoder.receive();
+        while (frame) {
+          const converted = await this.convertFrameWithTiming(frame, timestampUs, durationUs);
+          frame.unref();
+
+          if (converted) {
+            this.frames.push(converted);
+          }
+
+          frame = await this.decoder.receive();
+        }
+      }
+
+      packet.unref();
+    }
+
+    // Flush decoder
+    try {
+      await this.decoder.flush();
+      let frame = await this.decoder.receive();
+      while (frame) {
+        const lastTimestamp = this.frames.length > 0
+          ? this.frames[this.frames.length - 1].timestamp + this.frames[this.frames.length - 1].duration
+          : 0;
+        const converted = await this.convertFrameWithTiming(
+          frame,
+          lastTimestamp,
+          NodeAvImageDecoder.DEFAULT_FRAME_DURATION
+        );
+        frame.unref();
+
+        if (converted) {
+          this.frames.push(converted);
+        }
+
+        frame = await this.decoder.receive();
+      }
+    } catch {
+      // Ignore flush errors
+    }
+  }
+
+  /**
+   * Convert a decoded frame to RGBA with specific timing
+   */
+  private async convertFrameWithTiming(
+    frame: any,
+    timestamp: number,
+    duration: number
+  ): Promise<DecodedImageFrame | null> {
+    const width = frame.width;
+    const height = frame.height;
+
+    if (width === 0 || height === 0) {
+      return null;
+    }
+
+    // Build filter description for scaling and format conversion
+    let filterDesc = '';
+    if (this.config.desiredWidth || this.config.desiredHeight) {
+      const scaleW = this.config.desiredWidth || -1;
+      const scaleH = this.config.desiredHeight || -1;
+      filterDesc = `scale=${scaleW}:${scaleH},format=rgba`;
+    } else {
+      filterDesc = 'format=rgba';
+    }
+
+    // Create or reuse filter
+    if (!this.filter) {
+      this.filter = FilterAPI.create(filterDesc, {});
+    }
+
+    await this.filter.process(frame);
+
+    let filtered = await this.filter.receive();
+    let attempts = 0;
+    while (filtered === null && attempts < 10) {
+      filtered = await this.filter.receive();
+      attempts++;
+    }
+
+    if (!filtered) {
+      return null;
+    }
+
+    const outputWidth = this.config.desiredWidth || width;
+    const outputHeight = this.config.desiredHeight || height;
+    const buffer = filtered.toBuffer();
+    filtered.unref();
+
+    return {
+      data: new Uint8Array(buffer),
+      width: outputWidth,
+      height: outputHeight,
+      timestamp,
+      duration,
+      complete: true,
+      colorSpace: this.config.colorSpace,
+    };
+  }
+
+  /**
+   * Initialize the decoder with the given codec (for static images)
    */
   private async initializeDecoder(codecId: AVCodecID): Promise<void> {
     this.formatContext = new FormatContext();
@@ -115,7 +281,6 @@ export class NodeAvImageDecoder {
     const params = this.stream.codecpar;
     params.codecType = AVMEDIA_TYPE_VIDEO;
     params.codecId = codecId;
-    // Width/height will be detected from the image data
     params.width = 0;
     params.height = 0;
 
@@ -125,34 +290,15 @@ export class NodeAvImageDecoder {
   }
 
   /**
-   * Decode the image data
+   * Decode static image data
    */
   private async decodeData(): Promise<void> {
     if (!this.decoder || !this.stream) {
       throw new Error('Decoder not initialized');
     }
 
-    const data = this.config.data;
-    const isAnimated = this.isAnimatedFormat();
-
-    if (isAnimated) {
-      // For animated formats, we need to parse frame boundaries
-      // For now, send all data as one packet and let decoder handle it
-      await this.sendPacket(Buffer.from(data), 0);
-    } else {
-      // For still images, send the entire buffer as one packet
-      await this.sendPacket(Buffer.from(data), 0);
-    }
-
+    await this.sendPacket(Buffer.from(this.config.data), 0);
     await this.drainFrames();
-  }
-
-  /**
-   * Check if this is an animated format
-   */
-  private isAnimatedFormat(): boolean {
-    const type = this.config.mimeType.toLowerCase();
-    return ['image/gif', 'image/apng', 'image/webp'].includes(type);
   }
 
   /**
@@ -194,7 +340,7 @@ export class NodeAvImageDecoder {
   }
 
   /**
-   * Convert a decoded frame to RGBA
+   * Convert a decoded frame to RGBA (for static images)
    */
   private async convertFrame(frame: any): Promise<DecodedImageFrame | null> {
     const width = frame.width;
@@ -204,7 +350,6 @@ export class NodeAvImageDecoder {
       return null;
     }
 
-    // Build filter description for scaling and format conversion
     let filterDesc = '';
     if (this.config.desiredWidth || this.config.desiredHeight) {
       const scaleW = this.config.desiredWidth || -1;
@@ -214,7 +359,6 @@ export class NodeAvImageDecoder {
       filterDesc = 'format=rgba';
     }
 
-    // Create or reuse filter
     if (!this.filter) {
       this.filter = FilterAPI.create(filterDesc, {});
     }
@@ -222,7 +366,6 @@ export class NodeAvImageDecoder {
     await this.filter.process(frame);
 
     let filtered = await this.filter.receive();
-    // Keep trying until we get a frame (filter might buffer)
     let attempts = 0;
     while (filtered === null && attempts < 10) {
       filtered = await this.filter.receive();
@@ -238,15 +381,13 @@ export class NodeAvImageDecoder {
     const buffer = filtered.toBuffer();
     filtered.unref();
 
-    const timestamp = this.frames.length * NodeAvImageDecoder.DEFAULT_FRAME_DURATION;
-    const duration = this.isAnimatedFormat() ? NodeAvImageDecoder.DEFAULT_FRAME_DURATION : 0;
-
+    // Static images have timestamp 0 and duration 0
     return {
       data: new Uint8Array(buffer),
       width: outputWidth,
       height: outputHeight,
-      timestamp,
-      duration,
+      timestamp: 0,
+      duration: 0,
       complete: true,
       colorSpace: this.config.colorSpace,
     };
@@ -274,6 +415,8 @@ export class NodeAvImageDecoder {
     this.filter = null;
     this.decoder?.close();
     this.decoder = null;
+    this.demuxer?.close();
+    this.demuxer = null;
     this.formatContext = null;
     this.stream = null;
   }
@@ -293,6 +436,14 @@ export class NodeAvImageDecoder {
    */
   static isTypeSupported(mimeType: string): boolean {
     return mimeType.toLowerCase() in MIME_TO_CODEC_ID;
+  }
+
+  /**
+   * Check if animated decoding is supported for this type
+   * (GIF and APNG work, WebP does not due to FFmpeg limitations)
+   */
+  static isAnimatedTypeSupported(mimeType: string): boolean {
+    return DEMUXER_FORMATS.includes(mimeType.toLowerCase());
   }
 }
 
@@ -327,7 +478,6 @@ export async function probeImageDimensions(
 
     decoder = await Decoder.create(stream, { exitOnError: false });
 
-    // Send the image data
     const packet = new Packet();
     packet.alloc();
     packet.streamIndex = stream.index;
@@ -340,7 +490,6 @@ export async function probeImageDimensions(
     await decoder.decode(packet);
     packet.unref();
 
-    // Get a frame to determine dimensions
     const frame = await decoder.receive();
     if (frame) {
       const width = frame.width;

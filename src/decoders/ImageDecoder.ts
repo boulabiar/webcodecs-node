@@ -640,9 +640,15 @@ export class ImageDecoder {
   private async _decodeAllFramesDirect(): Promise<void> {
     if (!this._data) return;
 
-    // Try node-av first for non-animated formats
-    const isAnimatedFormat = ['image/gif', 'image/apng', 'image/webp'].includes(this._type.toLowerCase());
-    if (!isAnimatedFormat && NodeAvImageDecoder.isTypeSupported(this._type)) {
+    // Determine if we can use node-av for this format
+    // - Static images: all supported types work with node-av
+    // - Animated GIF/APNG: node-av Demuxer API works correctly
+    // - Animated WebP: NOT supported by node-av (FFmpeg webp demuxer skips ANIM/ANMF chunks)
+    const type = this._type.toLowerCase();
+    const isWebP = type === 'image/webp';
+    const canUseNodeAv = NodeAvImageDecoder.isTypeSupported(this._type) && !isWebP;
+
+    if (canUseNodeAv) {
       try {
         await this._decodeWithNodeAv();
         if (this._frames.length > 0) {

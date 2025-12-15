@@ -209,7 +209,7 @@ describe('ImageDecoder', () => {
 
       const track = decoder.tracks.selectedTrack;
       if (!track || !track.animated || track.frameCount <= 1) {
-        console.log('Skipping test: FFmpeg reported WebP as non-animated');
+        console.log('Skipping test: FFmpeg could not detect GIF animation');
         decoder.close();
         return;
       }
@@ -321,7 +321,9 @@ describe('ImageDecoder', () => {
       decoder.close();
     });
 
-    // Animated WebP decoding requires FFmpeg 6.1+ (has native ANIM/ANMF chunk support)
+    // Animated WebP decoding requires FFmpeg 6.1+ but has known issues.
+    // FFmpeg's webp demuxer often fails with "image data not found" on animated WebP,
+    // resulting in only 1 frame being decoded. This is a known FFmpeg limitation.
     (HAS_ANIMATED_WEBP_SUPPORT ? it : it.skip)('should decode an animated WebP with multiple frames', async () => {
       const candidatePath = path.join(TEST_IMAGES_DIR, 'animated_multi.webp');
       const fallbackPath = path.join(FIXTURE_IMAGES_DIR, 'animated_multi.webp');
@@ -346,7 +348,9 @@ describe('ImageDecoder', () => {
 
       const track = decoder.tracks.selectedTrack;
       if (!track || !track.animated || track.frameCount <= 1) {
-        console.log('Skipping test: FFmpeg reported WebP as non-animated');
+        // FFmpeg's webp decoder has known issues with animated WebP - it often
+        // fails to decode multiple frames, reporting only 1 frame instead.
+        console.log('Skipping test: FFmpeg could not decode animated WebP frames (known limitation)');
         decoder.close();
         return;
       }

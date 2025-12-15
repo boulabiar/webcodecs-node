@@ -3,7 +3,7 @@
  * https://developer.mozilla.org/en-US/docs/Web/API/AudioEncoder
  */
 
-import { EventEmitter } from 'events';
+import { WebCodecsEventTarget } from '../utils/event-target.js';
 import { AudioData } from '../core/AudioData.js';
 import { EncodedAudioChunk } from '../core/EncodedAudioChunk.js';
 import { DOMException } from '../types/index.js';
@@ -48,7 +48,7 @@ export interface AudioEncoderSupport {
 
 const DEFAULT_FLUSH_TIMEOUT = 30000;
 
-export class AudioEncoder extends EventEmitter {
+export class AudioEncoder extends WebCodecsEventTarget {
   private _state: CodecState = 'unconfigured';
   private _encodeQueueSize = 0;
   private _config: AudioEncoderConfig | null = null;
@@ -269,8 +269,14 @@ export class AudioEncoder extends EventEmitter {
       latencyMode: this._config.latencyMode,
     });
 
-    this._encoder.on('encodedFrame', (frame: { data: Buffer; timestamp: number; keyFrame: boolean }) => {
+    this._encoder.on('encodedFrame', (frame: { data: Buffer; timestamp: number; keyFrame: boolean; description?: Buffer }) => {
       this._handleEncodedFrame(frame);
+    });
+
+    this._encoder.on('frameAccepted', () => {
+      // Frame has started processing - decrement queue and emit dequeue
+      this._encodeQueueSize = Math.max(0, this._encodeQueueSize - 1);
+      this.emit('dequeue');
     });
 
     this._encoder.on('error', (err: Error) => {
@@ -285,20 +291,29 @@ export class AudioEncoder extends EventEmitter {
     }
   }
 
-  private _handleEncodedFrame(frame: { data: Buffer; timestamp: number; keyFrame: boolean }): void {
+  private _handleEncodedFrame(frame: { data: Buffer; timestamp: number; keyFrame: boolean; description?: Buffer }): void {
     if (!this._config) return;
 
     const samplesPerFrame = getAudioFrameSize(this._ffmpegCodec) || 1024;
-    const timestamp = (this._frameCount * 1_000_000) / this._config.sampleRate;
+    // Use timestamp from backend (in samples) converted to microseconds
+    // Clamp to non-negative (AAC encoder has priming delay causing negative initial timestamps)
+    const timestamp = Math.max(0, (frame.timestamp * 1_000_000) / this._config.sampleRate);
     const duration = (samplesPerFrame * 1_000_000) / this._config.sampleRate;
 
     let payload = frame.data;
     const codecBase = this._config.codec.split('.')[0].toLowerCase();
     const isAac = codecBase === 'mp4a' || codecBase === 'aac';
 
+    // Use description from backend if provided (AAC, FLAC, Vorbis, etc.)
+    // For AAC, the backend provides proper AudioSpecificConfig with correct channelConfiguration
+    if (frame.description && !this._codecDescription) {
+      this._codecDescription = new Uint8Array(frame.description);
+    }
+
     if (this._bitstreamFormat === 'aac' && isAac) {
       const stripped = stripAdtsHeader(new Uint8Array(frame.data));
       payload = Buffer.from(stripped);
+      // Only build AudioSpecificConfig if backend didn't provide one
       if (!this._codecDescription) {
         this._codecDescription = buildAudioSpecificConfig({
           samplingRate: this._config.sampleRate,
@@ -313,9 +328,6 @@ export class AudioEncoder extends EventEmitter {
       duration,
       data: new Uint8Array(payload),
     });
-
-    this._encodeQueueSize = Math.max(0, this._encodeQueueSize - 1);
-    this.emit('dequeue');
 
     const metadata: AudioEncoderOutputMetadata | undefined = this._firstChunk
       ? {
@@ -335,11 +347,17 @@ export class AudioEncoder extends EventEmitter {
   private _audioDataToPCM(data: AudioData): Buffer {
     const numFrames = data.numberOfFrames;
     const numChannels = data.numberOfChannels;
+    const format = data.format;
+
+    if (!format) {
+      throw new Error('Cannot convert closed AudioData to PCM');
+    }
+
     const bufferSize = numFrames * numChannels * 4;
     const buffer = Buffer.alloc(bufferSize);
     const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
-    const isPlanar = data.format.endsWith('-planar');
+    const isPlanar = format.endsWith('-planar');
     const tempBuffer = new Float32Array(numFrames);
 
     if (isPlanar) {

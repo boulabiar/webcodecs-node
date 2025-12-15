@@ -3,7 +3,7 @@
  * https://developer.mozilla.org/en-US/docs/Web/API/VideoEncoder
  */
 
-import { EventEmitter } from 'events';
+import { WebCodecsEventTarget } from '../utils/event-target.js';
 import { VideoFrame } from '../core/VideoFrame.js';
 import { EncodedVideoChunk } from '../core/EncodedVideoChunk.js';
 import type { EncodedVideoChunkType } from '../core/EncodedVideoChunk.js';
@@ -56,7 +56,7 @@ export interface VideoEncoderEncodeOptions {
 
 const DEFAULT_FLUSH_TIMEOUT = 30000;
 
-export class VideoEncoder extends EventEmitter {
+export class VideoEncoder extends WebCodecsEventTarget {
   private _state: CodecState = 'unconfigured';
   private _encodeQueueSize = 0;
   private _config: VideoEncoderConfig | null = null;
@@ -168,6 +168,11 @@ export class VideoEncoder extends EventEmitter {
 
     if (!(frame instanceof VideoFrame)) {
       throw new TypeError('frame must be a VideoFrame');
+    }
+
+    if (!frame.format) {
+      this._safeErrorCallback(new Error('Cannot encode a closed VideoFrame'));
+      return;
     }
 
     if (!this._encoder) {
@@ -306,6 +311,12 @@ export class VideoEncoder extends EventEmitter {
       this._handleEncodedFrame(frame);
     });
 
+    this._encoder.on('frameAccepted', () => {
+      // Frame has started processing - decrement queue and emit dequeue
+      this._encodeQueueSize = Math.max(0, this._encodeQueueSize - 1);
+      this.emit('dequeue');
+    });
+
     this._encoder.on('error', (err: Error) => {
       this._safeErrorCallback(err);
     });
@@ -318,7 +329,7 @@ export class VideoEncoder extends EventEmitter {
     }
   }
 
-  private _handleEncodedFrame(frame: { data: Buffer; timestamp: number; keyFrame: boolean }): void {
+  private _handleEncodedFrame(frame: { data: Buffer; timestamp: number; keyFrame: boolean; description?: Buffer }): void {
     if (!this._config) return;
 
     const frameInfo = this._pendingFrames.shift();
@@ -334,11 +345,16 @@ export class VideoEncoder extends EventEmitter {
       data: new Uint8Array(frame.data),
     });
 
-    this._encodeQueueSize = Math.max(0, this._encodeQueueSize - 1);
-    this.emit('dequeue');
-
+    // Include decoder config with description on first chunk
     const metadata: VideoEncoderOutputMetadata | undefined = this._firstChunk
-      ? { decoderConfig: { codec: this._config.codec, codedWidth: this._config.width, codedHeight: this._config.height } }
+      ? {
+          decoderConfig: {
+            codec: this._config.codec,
+            codedWidth: this._config.width,
+            codedHeight: this._config.height,
+            description: frame.description ? new Uint8Array(frame.description) : undefined,
+          },
+        }
       : undefined;
 
     this._firstChunk = false;

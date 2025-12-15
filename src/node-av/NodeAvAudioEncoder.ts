@@ -50,6 +50,8 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
   private sampleFormat: AVSampleFormat = AV_SAMPLE_FMT_FLT;
   private encoderSampleFormat: AVSampleFormat = AV_SAMPLE_FMT_FLTP;
   private timeBase: Rational = new Rational(1, OPUS_SAMPLE_RATE);
+  private codecDescription: Buffer | null = null;
+  private firstFrame = true;
 
   get isHealthy(): boolean {
     return !this.shuttingDown;
@@ -100,6 +102,8 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
       try {
         while (this.queue.length > 0) {
           const data = this.queue.shift()!;
+          // Emit frameAccepted when frame starts processing (for dequeue event)
+          setImmediate(() => this.emit('frameAccepted'));
           await this.encodeBuffer(data);
         }
       } catch (err) {
@@ -127,6 +131,52 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
     logger.info(`Using encoder: ${encoderCodec}, format: ${options.sampleFormat}`);
 
     this.encoder = await Encoder.create(encoderCodec as FFEncoderCodec, options);
+
+    // Extract codec description (extradata) for codecs that require it
+    this.extractCodecDescription();
+  }
+
+  private extractCodecDescription(): void {
+    if (!this.encoder || !this.config) return;
+    if (this.codecDescription) return; // Already extracted
+
+    const codecBase = this.config.codec.split('.')[0].toLowerCase();
+
+    try {
+      const ctx = this.encoder.getCodecContext();
+      if (!ctx) return;
+
+      const extraData = ctx.extraData;
+      if (!extraData || extraData.length === 0) return;
+
+      if (codecBase === 'mp4a' || codecBase === 'aac') {
+        // AAC: extradata contains AudioSpecificConfig (including PCE if needed)
+        // This is the proper description for MP4 muxing and decoding
+        this.codecDescription = Buffer.from(extraData);
+        logger.debug(`AAC description from extradata: ${this.codecDescription.length} bytes`);
+      } else if (codecBase === 'opus') {
+        // Opus: extradata contains OpusHead structure
+        // Required for multi-channel Opus decoding
+        this.codecDescription = Buffer.from(extraData);
+        logger.debug(`Opus description from extradata: ${this.codecDescription.length} bytes`);
+      } else if (codecBase === 'flac') {
+        // FLAC description: 'fLaC' magic + STREAMINFO block
+        // The extradata from FFmpeg is just the STREAMINFO, we need to prepend magic
+        const magic = Buffer.from('fLaC');
+        // STREAMINFO block header: type (0x00 for STREAMINFO) | last-block flag (0x80 if last)
+        // followed by 3-byte length
+        const blockHeader = Buffer.from([0x80, 0x00, 0x00, extraData.length]);
+        this.codecDescription = Buffer.concat([magic, blockHeader, extraData]);
+        logger.debug(`FLAC description: ${this.codecDescription.length} bytes`);
+      } else if (codecBase === 'vorbis') {
+        // Vorbis description is the identification + comment + setup headers
+        // The extradata from FFmpeg should contain all three headers
+        this.codecDescription = Buffer.from(extraData);
+        logger.debug(`Vorbis description: ${this.codecDescription.length} bytes`);
+      }
+    } catch (err) {
+      logger.debug(`Failed to extract codec description: ${err}`);
+    }
   }
 
   private getEncoderCodec(codec: string): string {
@@ -192,6 +242,13 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
       if (isRealtime) {
         options.frame_duration = '10';
       }
+    }
+
+    // Frame size configuration for specific codecs
+    if (isFlac) {
+      // FLAC default block size is 4608 samples, which is too large for small inputs
+      // Use a smaller frame size to allow encoding of smaller buffers
+      options.frame_size = '1024';
     }
 
     return {
@@ -272,16 +329,26 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
     await this.encoder.encode(frame);
     frame.unref();
 
+    // Try to extract codec description after first encode (some codecs like FLAC
+    // don't populate extradata until after encoding starts)
+    this.extractCodecDescription();
+
     let packet = await this.encoder.receive();
     while (packet) {
       if (packet.data) {
         const timestamp = packet.pts !== undefined ? Number(packet.pts) : this.frameIndex;
         const keyFrame = (packet.flags & AV_PKT_FLAG_KEY) === AV_PKT_FLAG_KEY || (packet as any).isKeyframe;
-        this.emit('encodedFrame', {
+        const frameData: any = {
           data: Buffer.from(packet.data),
           timestamp,
           keyFrame,
-        });
+        };
+        // Include codec description on the first frame
+        if (this.firstFrame && this.codecDescription) {
+          frameData.description = this.codecDescription;
+          this.firstFrame = false;
+        }
+        this.emit('encodedFrame', frameData);
       }
       packet.unref();
       packet = await this.encoder.receive();
@@ -360,11 +427,17 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
           if (packet.data) {
             const timestamp = packet.pts !== undefined ? Number(packet.pts) : this.frameIndex;
             const keyFrame = (packet.flags & AV_PKT_FLAG_KEY) === AV_PKT_FLAG_KEY || (packet as any).isKeyframe;
-            this.emit('encodedFrame', {
+            const frameData: any = {
               data: Buffer.from(packet.data),
               timestamp,
               keyFrame,
-            });
+            };
+            // Include codec description on the first frame
+            if (this.firstFrame && this.codecDescription) {
+              frameData.description = this.codecDescription;
+              this.firstFrame = false;
+            }
+            this.emit('encodedFrame', frameData);
           }
           packet.unref();
           packet = await this.encoder.receive();

@@ -41,8 +41,6 @@ import type {
   DecodedFrame,
 } from '../backends/types.js';
 import type { AudioSampleFormat } from '../types/audio.js';
-import type { AacConfig } from '../utils/aac.js';
-import { wrapAacFrameWithAdts } from '../utils/aac.js';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('NodeAvAudioDecoder');
@@ -68,7 +66,6 @@ export class NodeAvAudioDecoder extends EventEmitter implements AudioDecoderBack
   private packetTimeBase: Rational = new Rational(1, DEFAULT_SAMPLE_RATE);
   private outputSampleFormat: AVSampleFormat = AV_SAMPLE_FMT_FLT;
   private filterDescription: string | null = null;
-  private aacConfig: AacConfig | null = null;
   private outputFormat: AudioSampleFormat = 'f32';
 
   get isHealthy(): boolean {
@@ -80,7 +77,6 @@ export class NodeAvAudioDecoder extends EventEmitter implements AudioDecoderBack
     this.packetTimeBase = new Rational(1, config.sampleRate);
     this.outputFormat = this.parseOutputFormat(config);
     this.outputSampleFormat = mapSampleFormat(this.outputFormat);
-    this.aacConfig = this.parseAacDescription(config);
   }
 
   write(data: Buffer | Uint8Array): boolean {
@@ -88,13 +84,8 @@ export class NodeAvAudioDecoder extends EventEmitter implements AudioDecoderBack
       return false;
     }
 
-    // If we have AAC config, wrap raw AAC frames with ADTS headers
-    let dataToWrite = Buffer.from(data);
-    if (this.aacConfig) {
-      dataToWrite = Buffer.from(wrapAacFrameWithAdts(new Uint8Array(data), this.aacConfig));
-    }
-
-    this.queue.push(dataToWrite);
+    // Pass raw data directly - extradata is set on the decoder context
+    this.queue.push(Buffer.from(data));
     void this.processQueue();
     return true;
   }
@@ -163,7 +154,7 @@ export class NodeAvAudioDecoder extends EventEmitter implements AudioDecoderBack
     (params as any).channels = this.config.numberOfChannels;
 
     // Set extradata if we have description (e.g., AudioSpecificConfig for AAC)
-    if (this.config.description && !this.aacConfig) {
+    if (this.config.description) {
       const desc = this.config.description;
       let bytes: Uint8Array;
       if (desc instanceof ArrayBuffer) {
@@ -232,15 +223,23 @@ export class NodeAvAudioDecoder extends EventEmitter implements AudioDecoderBack
   }
 
   private async toOutputBuffer(frame: any): Promise<Buffer | null> {
-    const outputFormatName = sampleFormatToFFmpegName(this.outputSampleFormat);
     const frameFormat = frame.format as AVSampleFormat;
+    const frameChannels = frame.channels || this.config?.numberOfChannels || 2;
+    const nbSamples = frame.nbSamples;
 
     // If frame already matches requested format, just export
     if (frameFormat === this.outputSampleFormat) {
       return frame.toBuffer();
     }
 
-    // Need to convert using filter
+    // For multi-channel audio (>2 channels), the filter has issues with channel layouts
+    // Convert manually from planar float to interleaved float if needed
+    if (frameChannels > 2 && frameFormat === AV_SAMPLE_FMT_FLTP && this.outputSampleFormat === AV_SAMPLE_FMT_FLT) {
+      return this.convertPlanarToInterleaved(frame, nbSamples, frameChannels);
+    }
+
+    // For stereo/mono, use filter for conversion
+    const outputFormatName = sampleFormatToFFmpegName(this.outputSampleFormat);
     const description = `aformat=sample_fmts=${outputFormatName}`;
 
     if (!this.filter || this.filterDescription !== description) {
@@ -264,44 +263,29 @@ export class NodeAvAudioDecoder extends EventEmitter implements AudioDecoderBack
     return buffer;
   }
 
-  private parseAacDescription(config: AudioDecoderBackendConfig): AacConfig | null {
-    const codecBase = config.codec.split('.')[0].toLowerCase();
-    const isAac = codecBase === 'mp4a' || codecBase === 'aac';
+  private convertPlanarToInterleaved(frame: any, nbSamples: number, numChannels: number): Buffer {
+    // Get planar buffer from frame - each channel is stored separately
+    const planarBuffer = frame.toBuffer() as Buffer;
+    const bytesPerSample = 4; // float32
+    const planeSize = nbSamples * bytesPerSample;
 
-    if (!isAac || !config.description) {
-      return null;
+    // Create interleaved output
+    const outputSize = nbSamples * numChannels * bytesPerSample;
+    const output = Buffer.alloc(outputSize);
+
+    // Convert from planar (LLLLLLLL RRRRRRRR ...) to interleaved (LRLRLRLR ...)
+    const inputView = new Float32Array(planarBuffer.buffer, planarBuffer.byteOffset, planarBuffer.byteLength / 4);
+    const outputView = new Float32Array(output.buffer, output.byteOffset, output.byteLength / 4);
+
+    for (let s = 0; s < nbSamples; s++) {
+      for (let ch = 0; ch < numChannels; ch++) {
+        const srcIdx = ch * nbSamples + s;
+        const dstIdx = s * numChannels + ch;
+        outputView[dstIdx] = inputView[srcIdx];
+      }
     }
 
-    // Parse AudioSpecificConfig to get profile and sampling frequency index
-    let bytes: Uint8Array;
-    if (config.description instanceof ArrayBuffer) {
-      bytes = new Uint8Array(config.description);
-    } else {
-      bytes = new Uint8Array(
-        config.description.buffer,
-        config.description.byteOffset,
-        config.description.byteLength
-      );
-    }
-
-    if (bytes.length < 2) {
-      return null;
-    }
-
-    // Parse AudioSpecificConfig (ISO 14496-3)
-    // First 5 bits: audioObjectType
-    // Next 4 bits: samplingFrequencyIndex
-    // Next 4 bits: channelConfiguration
-    const audioObjectType = (bytes[0] >> 3) & 0x1f;
-    const samplingFrequencyIndex = ((bytes[0] & 0x07) << 1) | ((bytes[1] >> 7) & 0x01);
-    const channelConfiguration = (bytes[1] >> 3) & 0x0f;
-
-    return {
-      audioObjectType,
-      samplingFrequencyIndex,
-      samplingRate: config.sampleRate,
-      channelConfiguration,
-    };
+    return output;
   }
 
   private getChannelLayout(numChannels: number): { nbChannels: number; order: number; mask: bigint } {

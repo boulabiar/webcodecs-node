@@ -192,15 +192,15 @@ describe('VideoFrame', () => {
         timestamp: 0,
       });
 
-      expect(frame.codedRect.x).toBe(0);
-      expect(frame.codedRect.y).toBe(0);
-      expect(frame.codedRect.width).toBe(8);
-      expect(frame.codedRect.height).toBe(8);
+      expect(frame.codedRect!.x).toBe(0);
+      expect(frame.codedRect!.y).toBe(0);
+      expect(frame.codedRect!.width).toBe(8);
+      expect(frame.codedRect!.height).toBe(8);
 
-      expect(frame.visibleRect.x).toBe(0);
-      expect(frame.visibleRect.y).toBe(0);
-      expect(frame.visibleRect.width).toBe(8);
-      expect(frame.visibleRect.height).toBe(8);
+      expect(frame.visibleRect!.x).toBe(0);
+      expect(frame.visibleRect!.y).toBe(0);
+      expect(frame.visibleRect!.width).toBe(8);
+      expect(frame.visibleRect!.height).toBe(8);
 
       frame.close();
     });
@@ -215,10 +215,10 @@ describe('VideoFrame', () => {
         visibleRect: { x: 1, y: 1, width: 6, height: 6 },
       });
 
-      expect(frame.visibleRect.x).toBe(1);
-      expect(frame.visibleRect.y).toBe(1);
-      expect(frame.visibleRect.width).toBe(6);
-      expect(frame.visibleRect.height).toBe(6);
+      expect(frame.visibleRect!.x).toBe(1);
+      expect(frame.visibleRect!.y).toBe(1);
+      expect(frame.visibleRect!.width).toBe(6);
+      expect(frame.visibleRect!.height).toBe(6);
 
       frame.close();
     });

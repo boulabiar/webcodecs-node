@@ -38,7 +38,14 @@ import {
   convertRgbaToI420,
   convertRgbaToNv12,
   convertNv12ToI420,
+  convertI420ToNv12,
 } from '../formats/conversions/index.js';
+import { calculateFrameSize } from '../ffmpeg/formats.js';
+import {
+  extractHevcParameterSetsFromAnnexB,
+  buildHvccDecoderConfig,
+  convertAnnexBToHvcc,
+} from '../utils/hevc.js';
 
 const logger = createLogger('NodeAvVideoEncoder');
 
@@ -100,6 +107,8 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
   private inputPixelFormat: AVPixelFormat = AV_PIX_FMT_YUV420P;
   private encoderPixelFormat: AVPixelFormat = AV_PIX_FMT_YUV420P;
   private timeBase: Rational = new Rational(1, DEFAULT_FRAMERATE);
+  private codecDescription: Buffer | null = null;
+  private isHevcCodec = false;
 
   get isHealthy(): boolean {
     return !this.shuttingDown;
@@ -154,6 +163,9 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
       try {
         while (this.queue.length > 0) {
           const data = this.queue.shift()!;
+          // Emit frameAccepted when frame starts processing (for dequeue event)
+          // Use setImmediate to ensure emit happens after write() returns
+          setImmediate(() => this.emit('frameAccepted'));
           await this.encodeBuffer(data);
         }
       } catch (err) {
@@ -173,6 +185,7 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
     }
 
     const codecName = parseCodecString(this.config.codec) ?? 'h264';
+    this.isHevcCodec = codecName === 'hevc';
     const framerate = this.config.framerate ?? DEFAULT_FRAMERATE;
     const gopSize = Math.max(1, framerate);
 
@@ -231,9 +244,10 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
   private async selectEncoderCodec(codecName: string): Promise<{ encoderCodec: any; isHardware: boolean }> {
     const hwPref = this.config?.hardwareAcceleration;
 
-    // Known problematic HW encoders
-    const skipHardwareCodecs = ['vp9', 'av1'];
-    const shouldTryHardware = hwPref === 'prefer-hardware' && !skipHardwareCodecs.includes(codecName);
+    // Hardware encoding via HardwareContext requires proper GPU setup (CUDA, QSV with working drivers)
+    // VAAPI requires uploading frames to GPU memory which adds complexity
+    // For now, only try hardware when explicitly requested and drivers are known to work
+    const shouldTryHardware = hwPref === 'prefer-hardware';
 
     if (shouldTryHardware) {
       try {
@@ -352,7 +366,7 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
   }
 
   private createFrame(buffer: Buffer): Frame {
-    const { width, height } = this.config!;
+    const { width, height, inputPixelFormat } = this.config!;
 
     // Convert input format to encoder format if needed
     if (this.inputPixelFormat === AV_PIX_FMT_RGBA || this.inputPixelFormat === AV_PIX_FMT_BGRA) {
@@ -378,7 +392,27 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
       });
     }
 
-    // Direct pass-through
+    // I420 input to NV12 for hardware encoding
+    if (this.inputPixelFormat === AV_PIX_FMT_YUV420P && this.encoderPixelFormat === AV_PIX_FMT_NV12) {
+      const convertedData = convertI420ToNv12(buffer, width, height);
+      return Frame.fromVideoBuffer(Buffer.from(convertedData), {
+        width,
+        height,
+        format: AV_PIX_FMT_NV12,
+        timeBase: this.timeBase,
+      });
+    }
+
+    // Direct pass-through - validate buffer size first
+    const formatName = inputPixelFormat || 'yuv420p';
+    const expectedSize = calculateFrameSize(formatName, width, height);
+    if (buffer.length < expectedSize) {
+      throw new Error(
+        `Buffer too small for ${formatName} frame: got ${buffer.length} bytes, expected ${expectedSize} bytes ` +
+        `(${width}x${height}). For I420, size should be width*height*1.5 = ${Math.floor(width * height * 1.5)}`
+      );
+    }
+
     return Frame.fromVideoBuffer(buffer, {
       width,
       height,
@@ -396,10 +430,34 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
         const timestamp = packet.pts !== undefined ? Number(packet.pts) : this.frameIndex;
         const keyFrame = (packet.flags & AV_PKT_FLAG_KEY) === AV_PKT_FLAG_KEY || packet.isKeyframe;
 
+        // For HEVC, extract VPS/SPS/PPS from first keyframe and build HVCC description
+        // Also convert Annex B (start codes) to length-prefixed format for MP4 compatibility
+        let frameData: Buffer = Buffer.from(packet.data);
+        if (this.isHevcCodec && keyFrame && !this.codecDescription) {
+          try {
+            const { vps, sps, pps } = extractHevcParameterSetsFromAnnexB(packet.data);
+            if (vps.length > 0 && sps.length > 0 && pps.length > 0) {
+              this.codecDescription = Buffer.from(buildHvccDecoderConfig(vps, sps, pps, 4));
+              logger.debug(`Built HVCC description: ${this.codecDescription.length} bytes`);
+            } else {
+              logger.warn('HEVC keyframe missing parameter sets (VPS/SPS/PPS)');
+            }
+          } catch (err) {
+            logger.warn(`Failed to extract HEVC parameter sets: ${(err as Error).message}`);
+          }
+        }
+
+        // Convert HEVC Annex B to length-prefixed (HVCC) format
+        if (this.isHevcCodec) {
+          frameData = convertAnnexBToHvcc(packet.data, 4);
+          logger.debug(`Converted HEVC frame to length-prefixed: ${packet.data.length} -> ${frameData.length} bytes`);
+        }
+
         const frame: EncodedFrame = {
-          data: Buffer.from(packet.data),
+          data: frameData,
           timestamp,
           keyFrame,
+          description: this.codecDescription ?? undefined,
         };
 
         logger.debug(`Encoded packet: size=${packet.data.length}, key=${keyFrame}`);

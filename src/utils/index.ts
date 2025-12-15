@@ -71,3 +71,10 @@ export {
   stripAdtsHeader,
   type AacConfig,
 } from './aac.js';
+
+// EventTarget support
+export {
+  WebCodecsEventTarget,
+  type EventListener,
+  type EventListenerOptions,
+} from './event-target.js';

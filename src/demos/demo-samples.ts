@@ -39,8 +39,8 @@ const VIDEO_SAMPLES: VideoSample[] = [
 ];
 
 const AUDIO_SAMPLES: AudioSample[] = [
-  { file: 'sample_opus.opus', codec: 'opus', sampleRate: 48000, channels: 2 },
-  { file: 'sample_mp3.mp3', codec: 'mp3', sampleRate: 44100, channels: 2 },
+  { file: 'sample_opus.opus', codec: 'opus', sampleRate: 48000, channels: 1 },
+  { file: 'sample_mp3.mp3', codec: 'mp3', sampleRate: 44100, channels: 1 },
   { file: 'sample_aac.aac', codec: 'mp4a.40.2', sampleRate: 44100, channels: 1 },
 ];
 
@@ -224,61 +224,6 @@ function parseH264Chunks(data: Buffer, chunks: Buffer[], keyFrames: boolean[]): 
 }
 
 /**
- * Extract encoded audio chunks from a file using FFmpeg
- */
-async function extractAudioChunks(filePath: string, codec: string): Promise<{ data: Buffer; format: string }> {
-  return new Promise((resolve, reject) => {
-    const codecBase = codec.split('.')[0].toLowerCase();
-    let outputFormat: string;
-    let outputCodec: string;
-
-    if (codecBase === 'opus') {
-      outputFormat = 'ogg';
-      outputCodec = 'copy';
-    } else if (codecBase === 'mp3') {
-      outputFormat = 'mp3';
-      outputCodec = 'copy';
-    } else if (codecBase === 'mp4a') {
-      outputFormat = 'adts';
-      outputCodec = 'copy';
-    } else {
-      reject(new Error(`Unsupported audio codec: ${codec}`));
-      return;
-    }
-
-    const args = [
-      '-i', filePath,
-      '-vn',  // No video
-      '-c:a', outputCodec,
-      '-f', outputFormat,
-      'pipe:1'
-    ];
-
-    const ffmpeg = spawn('ffmpeg', args);
-    const dataChunks: Buffer[] = [];
-
-    ffmpeg.stdout.on('data', (data: Buffer) => {
-      dataChunks.push(data);
-    });
-
-    ffmpeg.stderr.on('data', () => {
-      // Ignore stderr
-    });
-
-    ffmpeg.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`FFmpeg exited with code ${code}`));
-        return;
-      }
-
-      resolve({ data: Buffer.concat(dataChunks), format: outputFormat });
-    });
-
-    ffmpeg.on('error', reject);
-  });
-}
-
-/**
  * Test VideoDecoder with a sample file
  */
 async function testVideoDecoder(sample: VideoSample): Promise<void> {
@@ -381,6 +326,222 @@ async function testVideoDecoder(sample: VideoSample): Promise<void> {
 }
 
 /**
+ * Extract audio frames from a file using FFmpeg
+ * Returns raw codec data in a format suitable for the decoder
+ */
+async function extractAudioFrames(filePath: string, codec: string): Promise<{ frames: Buffer[]; format: string }> {
+  const codecBase = codec.split('.')[0].toLowerCase();
+
+  // For Opus, parse Ogg container directly (no FFmpeg needed)
+  if (codecBase === 'opus') {
+    const frames: Buffer[] = [];
+    await parseOpusPackets(filePath, frames);
+    return { frames, format: 'opus' };
+  }
+
+  return new Promise((resolve, reject) => {
+    let outputFormat: string;
+    let args: string[];
+
+    if (codecBase === 'mp3') {
+      // For MP3, use mp3 format which is self-framing
+      outputFormat = 'mp3';
+      args = [
+        '-i', filePath,
+        '-vn',  // No video
+        '-c:a', 'copy',
+        '-f', outputFormat,
+        'pipe:1'
+      ];
+    } else if (codecBase === 'mp4a' || codecBase === 'aac') {
+      // For AAC, use ADTS which is self-framing
+      outputFormat = 'adts';
+      args = [
+        '-i', filePath,
+        '-vn',  // No video
+        '-c:a', 'copy',
+        '-f', outputFormat,
+        'pipe:1'
+      ];
+    } else {
+      reject(new Error(`Unsupported audio codec: ${codec}`));
+      return;
+    }
+
+    const ffmpeg = spawn('ffmpeg', args);
+    const dataChunks: Buffer[] = [];
+
+    ffmpeg.stdout.on('data', (data: Buffer) => {
+      dataChunks.push(data);
+    });
+
+    ffmpeg.stderr.on('data', () => {
+      // Ignore stderr
+    });
+
+    ffmpeg.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`FFmpeg exited with code ${code}`));
+        return;
+      }
+
+      const fullData = Buffer.concat(dataChunks);
+      const frames: Buffer[] = [];
+
+      if (outputFormat === 'adts') {
+        // Parse ADTS frames (AAC)
+        parseAdtsFrames(fullData, frames);
+      } else if (outputFormat === 'mp3') {
+        // Parse MP3 frames
+        parseMp3Frames(fullData, frames);
+      }
+
+      resolve({ frames, format: outputFormat });
+    });
+
+    ffmpeg.on('error', reject);
+  });
+}
+
+/**
+ * Parse Opus packets from an Ogg file
+ * Reads the file directly and extracts raw Opus packets from Ogg container
+ */
+async function parseOpusPackets(filePath: string, frames: Buffer[]): Promise<void> {
+  const fileData = fs.readFileSync(filePath);
+  parseOggOpusPackets(fileData, frames);
+}
+
+/**
+ * Parse Ogg container to extract Opus packets
+ */
+function parseOggOpusPackets(data: Buffer, frames: Buffer[]): void {
+  let offset = 0;
+
+  while (offset < data.length - 27) {
+    // Check for OggS magic
+    if (data[offset] !== 0x4F || data[offset + 1] !== 0x67 ||
+        data[offset + 2] !== 0x67 || data[offset + 3] !== 0x53) {
+      offset++;
+      continue;
+    }
+
+    // Parse Ogg page header
+    const version = data[offset + 4];
+    if (version !== 0) {
+      offset++;
+      continue;
+    }
+
+    const headerType = data[offset + 5];
+    const numSegments = data[offset + 26];
+
+    if (offset + 27 + numSegments > data.length) break;
+
+    // Read segment table
+    const segmentTable = data.slice(offset + 27, offset + 27 + numSegments);
+    let pageDataSize = 0;
+    for (let i = 0; i < numSegments; i++) {
+      pageDataSize += segmentTable[i];
+    }
+
+    const pageDataOffset = offset + 27 + numSegments;
+    if (pageDataOffset + pageDataSize > data.length) break;
+
+    // Skip header pages (first two pages are OpusHead and OpusTags)
+    const isHeaderPage = (headerType & 0x02) !== 0; // Beginning of stream
+    if (!isHeaderPage) {
+      // Extract packets from this page
+      let packetOffset = pageDataOffset;
+      let packetSize = 0;
+
+      for (let i = 0; i < numSegments; i++) {
+        packetSize += segmentTable[i];
+
+        // Segment size < 255 means end of packet
+        if (segmentTable[i] < 255) {
+          if (packetSize > 0) {
+            const packet = data.slice(packetOffset, packetOffset + packetSize);
+            // Skip if it looks like a header (OpusHead or OpusTags)
+            if (packet.length > 8 &&
+                !(packet[0] === 0x4F && packet[1] === 0x70)) { // Not "Op" prefix
+              frames.push(packet);
+            }
+          }
+          packetOffset += packetSize;
+          packetSize = 0;
+        }
+      }
+    }
+
+    offset = pageDataOffset + pageDataSize;
+  }
+}
+
+/**
+ * Parse ADTS frames from AAC data
+ */
+function parseAdtsFrames(data: Buffer, frames: Buffer[]): void {
+  let offset = 0;
+  while (offset < data.length - 7) {
+    // Check for ADTS sync word (0xFFF)
+    if (data[offset] === 0xFF && (data[offset + 1] & 0xF0) === 0xF0) {
+      // Get frame length from header
+      const frameLength = ((data[offset + 3] & 0x03) << 11) |
+                          (data[offset + 4] << 3) |
+                          ((data[offset + 5] & 0xE0) >> 5);
+
+      if (frameLength > 0 && offset + frameLength <= data.length) {
+        frames.push(data.slice(offset, offset + frameLength));
+        offset += frameLength;
+      } else {
+        offset++;
+      }
+    } else {
+      offset++;
+    }
+  }
+}
+
+/**
+ * Parse MP3 frames
+ */
+function parseMp3Frames(data: Buffer, frames: Buffer[]): void {
+  let offset = 0;
+  while (offset < data.length - 4) {
+    // Check for MP3 sync word (0xFF followed by 0xE0 or higher)
+    if (data[offset] === 0xFF && (data[offset + 1] & 0xE0) === 0xE0) {
+      // Parse MP3 header to get frame size
+      const header = data.readUInt32BE(offset);
+      const version = (header >> 19) & 0x03;
+      const layer = (header >> 17) & 0x03;
+      const bitrateIndex = (header >> 12) & 0x0F;
+      const sampleRateIndex = (header >> 10) & 0x03;
+      const padding = (header >> 9) & 0x01;
+
+      // Calculate frame size (simplified for Layer III)
+      const bitrates = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0];
+      const sampleRates = [44100, 48000, 32000, 0];
+
+      const bitrate = bitrates[bitrateIndex] * 1000;
+      const sampleRate = sampleRates[sampleRateIndex];
+
+      if (bitrate > 0 && sampleRate > 0 && layer === 1) {
+        // Layer III frame size calculation
+        const frameSize = Math.floor((144 * bitrate) / sampleRate) + padding;
+
+        if (frameSize > 0 && offset + frameSize <= data.length) {
+          frames.push(data.slice(offset, offset + frameSize));
+          offset += frameSize;
+          continue;
+        }
+      }
+    }
+    offset++;
+  }
+}
+
+/**
  * Test AudioDecoder with a sample file
  */
 async function testAudioDecoder(sample: AudioSample): Promise<void> {
@@ -394,9 +555,14 @@ async function testAudioDecoder(sample: AudioSample): Promise<void> {
   console.log(`  Testing ${sample.file} (${sample.codec})...`);
 
   try {
-    // For audio, we'll use the raw file data directly with our decoder
-    const fileData = fs.readFileSync(filePath);
-    console.log(`    File size: ${fileData.length} bytes`);
+    // Extract audio frames using FFmpeg
+    const { frames, format } = await extractAudioFrames(filePath, sample.codec);
+    console.log(`    Extracted ${frames.length} frames (${format})`);
+
+    if (frames.length === 0) {
+      console.log(`    ⚠ No frames extracted`);
+      return;
+    }
 
     // Create decoder
     const audioSamples: AudioData[] = [];
@@ -419,22 +585,38 @@ async function testAudioDecoder(sample: AudioSample): Promise<void> {
 
     decoder.configure(config);
 
-    // Create a single chunk with the file data
-    // Note: In real usage, you'd parse the container format properly
-    const chunk = new EncodedAudioChunk({
-      type: 'key',
-      timestamp: 0,
-      data: new Uint8Array(fileData),
-    });
+    // Decode frames
+    const maxFrames = Math.min(frames.length, 100); // Limit for speed
+    for (let i = 0; i < maxFrames; i++) {
+      const chunk = new EncodedAudioChunk({
+        type: 'key',
+        timestamp: i * 20000, // ~20ms per frame
+        data: new Uint8Array(frames[i]),
+      });
 
-    decoder.decode(chunk);
+      try {
+        decoder.decode(chunk);
+      } catch (err) {
+        errors.push(err instanceof Error ? err : new Error(String(err)));
+        break;
+      }
+
+      // Small delay to allow processing
+      if (i % 20 === 19) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+    }
 
     // Flush and wait
-    await decoder.flush();
+    try {
+      await decoder.flush();
+    } catch (err) {
+      errors.push(err instanceof Error ? err : new Error(String(err)));
+    }
     decoder.close();
 
     if (errors.length > 0) {
-      console.log(`    ✗ Errors: ${errors.map(e => e.message).join(', ')}`);
+      console.log(`    ✗ Error: ${errors[0].message}`);
     } else if (audioSamples.length > 0) {
       const totalSamples = audioSamples.reduce((sum, d) => sum + d.numberOfFrames, 0);
       console.log(`    ✓ Decoded ${audioSamples.length} audio data objects`);

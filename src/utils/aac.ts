@@ -152,6 +152,13 @@ export function stripAdtsHeader(frame: Uint8Array): Uint8Array {
     return frame;
   }
 
+  // Verify ADTS sync word (0xFFF) before stripping
+  // ADTS sync: first 12 bits are all 1s (0xFF followed by 0xFx)
+  if (frame[0] !== 0xff || (frame[1] & 0xf0) !== 0xf0) {
+    // Not ADTS format - return as-is (already raw AAC)
+    return frame;
+  }
+
   const protectionAbsent = frame[1] & 0x01;
   const headerLength = protectionAbsent ? 7 : 9;
   if (frame.length <= headerLength) {

@@ -14,6 +14,8 @@ export interface EncodedFrame {
   data: Buffer;
   timestamp: number;
   keyFrame: boolean;
+  /** Optional codec description (e.g., HVCC for HEVC, AVC config for H.264) */
+  description?: Buffer;
 }
 
 /**

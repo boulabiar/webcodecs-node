@@ -3,7 +3,7 @@
  * https://developer.mozilla.org/en-US/docs/Web/API/VideoDecoder
  */
 
-import { EventEmitter } from 'events';
+import { WebCodecsEventTarget } from '../utils/event-target.js';
 import { Buffer } from 'buffer';
 import { VideoFrame } from '../core/VideoFrame.js';
 import type { VideoPixelFormat } from '../core/VideoFrame.js';
@@ -49,7 +49,7 @@ export interface VideoDecoderSupport {
 
 const DEFAULT_FLUSH_TIMEOUT = 30000;
 
-export class VideoDecoder extends EventEmitter {
+export class VideoDecoder extends WebCodecsEventTarget {
   private _state: CodecState = 'unconfigured';
   private _decodeQueueSize = 0;
   private _config: VideoDecoderConfig | null = null;
@@ -280,7 +280,12 @@ export class VideoDecoder extends EventEmitter {
     if (!this._config?.codedWidth || !this._config?.codedHeight) return;
 
     const pixFmt = pixelFormatToFFmpeg(this._outputFormat);
-    const description = this._getDescriptionBuffer();
+
+    // Don't pass HVCC/AVCC description to backend when we convert to Annex B
+    // because VPS/SPS/PPS are already included in the converted keyframe data.
+    // Passing HVCC extradata makes FFmpeg expect length-prefixed packets.
+    const shouldPassDescription = !this._avcConfig && !this._hevcConfig;
+    const description = shouldPassDescription ? this._getDescriptionBuffer() : null;
 
     this._decoder = new NodeAvVideoDecoder();
 
@@ -296,6 +301,12 @@ export class VideoDecoder extends EventEmitter {
 
     this._decoder.on('frame', (data: Buffer) => {
       this._handleDecodedFrame(data);
+    });
+
+    this._decoder.on('chunkAccepted', () => {
+      // Chunk has started processing - decrement queue and emit dequeue
+      this._decodeQueueSize = Math.max(0, this._decodeQueueSize - 1);
+      this.emit('dequeue');
     });
 
     this._decoder.on('error', (err: Error) => {
@@ -409,9 +420,6 @@ export class VideoDecoder extends EventEmitter {
       duration: duration ?? undefined,
       colorSpace: this._config.colorSpace,
     });
-
-    this._decodeQueueSize = Math.max(0, this._decodeQueueSize - 1);
-    this.emit('dequeue');
 
     this._safeOutputCallback(frame);
   }

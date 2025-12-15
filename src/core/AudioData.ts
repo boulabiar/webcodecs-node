@@ -62,8 +62,8 @@ export class AudioData {
     this._numberOfChannels = init.numberOfChannels;
     this._timestamp = init.timestamp;
 
-    // Duration in microseconds
-    this._duration = (init.numberOfFrames / init.sampleRate) * 1_000_000;
+    // Duration in microseconds (must be an integer per spec)
+    this._duration = Math.floor((init.numberOfFrames / init.sampleRate) * 1_000_000);
 
     // Copy or transfer the data
     if (init.data instanceof ArrayBuffer) {
@@ -95,12 +95,12 @@ export class AudioData {
     }
   }
 
-  get format(): AudioSampleFormat { return this._format; }
-  get sampleRate(): number { return this._sampleRate; }
-  get numberOfFrames(): number { return this._numberOfFrames; }
-  get numberOfChannels(): number { return this._numberOfChannels; }
-  get timestamp(): number { return this._timestamp; }
-  get duration(): number { return this._duration; }
+  get format(): AudioSampleFormat | null { return this._closed ? null : this._format; }
+  get sampleRate(): number { return this._closed ? 0 : this._sampleRate; }
+  get numberOfFrames(): number { return this._closed ? 0 : this._numberOfFrames; }
+  get numberOfChannels(): number { return this._closed ? 0 : this._numberOfChannels; }
+  get timestamp(): number { return this._closed ? 0 : this._timestamp; }
+  get duration(): number { return this._closed ? 0 : this._duration; }
 
   allocationSize(options: AudioDataCopyToOptions): number {
     this._checkClosed();
@@ -124,7 +124,11 @@ export class AudioData {
     const frameCount = options.frameCount ?? (this._numberOfFrames - frameOffset);
     const destFormat = options.format ?? this._format;
 
-    const numPlanes = this._isPlanar(this._format) ? this._numberOfChannels : 1;
+    // When converting to planar format, validate planeIndex against destination planes
+    // When copying same format, validate against source format
+    const destIsPlanar = this._isPlanar(destFormat);
+    const srcIsPlanar = this._isPlanar(this._format);
+    const numPlanes = destIsPlanar ? this._numberOfChannels : (srcIsPlanar ? this._numberOfChannels : 1);
     if (planeIndex < 0 || planeIndex >= numPlanes) {
       throw new RangeError(`Invalid planeIndex: ${planeIndex}`);
     }

@@ -46,16 +46,28 @@ export class VideoFrame {
   private _data: Uint8Array;
   private _closed = false;
 
-  readonly format: VideoPixelFormat;
-  readonly codedWidth: number;
-  readonly codedHeight: number;
-  readonly codedRect: DOMRectReadOnly;
-  readonly visibleRect: DOMRectReadOnly;
-  readonly displayWidth: number;
-  readonly displayHeight: number;
-  readonly duration: number | null;
-  readonly timestamp: number;
-  readonly colorSpace: VideoColorSpace;
+  private _format: VideoPixelFormat;
+  private _codedWidth: number;
+  private _codedHeight: number;
+  private _codedRect: DOMRectReadOnly;
+  private _visibleRect: DOMRectReadOnly;
+  private _displayWidth: number;
+  private _displayHeight: number;
+  private _duration: number | null;
+  private _timestamp: number;
+  private _colorSpace: VideoColorSpace;
+
+  get format(): VideoPixelFormat | null { return this._closed ? null : this._format; }
+  get codedWidth(): number { return this._closed ? 0 : this._codedWidth; }
+  get codedHeight(): number { return this._closed ? 0 : this._codedHeight; }
+  get codedRect(): DOMRectReadOnly | null { return this._closed ? null : this._codedRect; }
+  get visibleRect(): DOMRectReadOnly | null { return this._closed ? null : this._visibleRect; }
+  get displayWidth(): number { return this._closed ? 0 : this._displayWidth; }
+  get displayHeight(): number { return this._closed ? 0 : this._displayHeight; }
+  // timestamp and duration are preserved after close per WebCodecs spec
+  get duration(): number | null { return this._duration; }
+  get timestamp(): number { return this._timestamp; }
+  get colorSpace(): VideoColorSpace | null { return this._closed ? null : this._colorSpace; }
 
   /**
    * Create a VideoFrame from raw pixel data or CanvasImageSource
@@ -63,10 +75,29 @@ export class VideoFrame {
   constructor(data: BufferSource, init: VideoFrameBufferInit);
   constructor(image: unknown, init: VideoFrameInit);
   constructor(dataOrImage: BufferSource | unknown, init: VideoFrameBufferInit | VideoFrameInit) {
+    // Validate init is provided
+    if (!init || typeof init !== 'object') {
+      throw new TypeError('VideoFrame init is required');
+    }
+
     // Check if it's raw pixel data (BufferSource) first
     if (dataOrImage instanceof ArrayBuffer || ArrayBuffer.isView(dataOrImage)) {
       const data = dataOrImage as BufferSource;
       const bufferInit = init as VideoFrameBufferInit;
+
+      // Validate required parameters for buffer init
+      if (!bufferInit.format) {
+        throw new TypeError('format is required');
+      }
+      if (typeof bufferInit.codedWidth !== 'number' || bufferInit.codedWidth <= 0) {
+        throw new TypeError('codedWidth must be a positive number');
+      }
+      if (typeof bufferInit.codedHeight !== 'number' || bufferInit.codedHeight <= 0) {
+        throw new TypeError('codedHeight must be a positive number');
+      }
+      if (typeof bufferInit.timestamp !== 'number') {
+        throw new TypeError('timestamp is required');
+      }
 
       if (data instanceof ArrayBuffer) {
         this._data = new Uint8Array(data);
@@ -74,58 +105,90 @@ export class VideoFrame {
         this._data = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
       }
 
-      this.format = bufferInit.format;
-      this.codedWidth = bufferInit.codedWidth;
-      this.codedHeight = bufferInit.codedHeight;
-      this.timestamp = bufferInit.timestamp;
-      this.duration = bufferInit.duration ?? null;
+      this._format = bufferInit.format;
+      this._codedWidth = bufferInit.codedWidth;
+      this._codedHeight = bufferInit.codedHeight;
+      this._timestamp = bufferInit.timestamp;
+      this._duration = bufferInit.duration ?? null;
 
-      this.codedRect = new DOMRectReadOnly(0, 0, bufferInit.codedWidth, bufferInit.codedHeight);
+      this._codedRect = new DOMRectReadOnly(0, 0, bufferInit.codedWidth, bufferInit.codedHeight);
 
       if (bufferInit.visibleRect) {
-        this.visibleRect = new DOMRectReadOnly(
+        this._visibleRect = new DOMRectReadOnly(
           bufferInit.visibleRect.x ?? 0,
           bufferInit.visibleRect.y ?? 0,
           bufferInit.visibleRect.width ?? bufferInit.codedWidth,
           bufferInit.visibleRect.height ?? bufferInit.codedHeight
         );
       } else {
-        this.visibleRect = new DOMRectReadOnly(0, 0, bufferInit.codedWidth, bufferInit.codedHeight);
+        this._visibleRect = new DOMRectReadOnly(0, 0, bufferInit.codedWidth, bufferInit.codedHeight);
       }
 
-      this.displayWidth = bufferInit.displayWidth ?? this.visibleRect.width;
-      this.displayHeight = bufferInit.displayHeight ?? this.visibleRect.height;
-      this.colorSpace = new VideoColorSpace(bufferInit.colorSpace);
+      this._displayWidth = bufferInit.displayWidth ?? this._visibleRect.width;
+      this._displayHeight = bufferInit.displayHeight ?? this._visibleRect.height;
+      this._colorSpace = new VideoColorSpace(
+        this._getDefaultColorSpace(bufferInit.format, bufferInit.colorSpace)
+      );
     } else if (isCanvasImageSource(dataOrImage)) {
       const frameInit = init as VideoFrameInit;
       const result = this._extractFromCanvasImageSource(dataOrImage, frameInit);
 
       this._data = result.data;
-      this.format = result.format;
-      this.codedWidth = result.width;
-      this.codedHeight = result.height;
-      this.timestamp = frameInit.timestamp;
-      this.duration = frameInit.duration ?? null;
+      this._format = result.format;
+      this._codedWidth = result.width;
+      this._codedHeight = result.height;
+      this._timestamp = frameInit.timestamp;
+      this._duration = frameInit.duration ?? null;
 
-      this.codedRect = new DOMRectReadOnly(0, 0, result.width, result.height);
+      this._codedRect = new DOMRectReadOnly(0, 0, result.width, result.height);
 
       if (frameInit.visibleRect) {
-        this.visibleRect = new DOMRectReadOnly(
+        this._visibleRect = new DOMRectReadOnly(
           frameInit.visibleRect.x ?? 0,
           frameInit.visibleRect.y ?? 0,
           frameInit.visibleRect.width ?? result.width,
           frameInit.visibleRect.height ?? result.height
         );
       } else {
-        this.visibleRect = new DOMRectReadOnly(0, 0, result.width, result.height);
+        this._visibleRect = new DOMRectReadOnly(0, 0, result.width, result.height);
       }
 
-      this.displayWidth = frameInit.displayWidth ?? this.visibleRect.width;
-      this.displayHeight = frameInit.displayHeight ?? this.visibleRect.height;
-      this.colorSpace = new VideoColorSpace(frameInit.colorSpace);
+      this._displayWidth = frameInit.displayWidth ?? this._visibleRect.width;
+      this._displayHeight = frameInit.displayHeight ?? this._visibleRect.height;
+      this._colorSpace = new VideoColorSpace(
+        this._getDefaultColorSpace(result.format, frameInit.colorSpace)
+      );
     } else {
       throw new TypeError('data must be an ArrayBuffer, ArrayBufferView, or CanvasImageSource');
     }
+  }
+
+  /**
+   * Get default color space based on pixel format
+   * RGB formats default to sRGB, YUV formats to BT.709
+   */
+  private _getDefaultColorSpace(
+    format: VideoPixelFormat,
+    init?: VideoColorSpaceInit
+  ): VideoColorSpaceInit {
+    // If user provided values, use them
+    if (init && (init.primaries || init.transfer || init.matrix || init.fullRange !== undefined)) {
+      return init;
+    }
+
+    // Apply defaults based on format
+    if (isRgbFormat(format)) {
+      // sRGB defaults for RGB formats
+      return {
+        primaries: 'bt709',
+        transfer: 'iec61966-2-1', // sRGB transfer function
+        matrix: 'rgb',
+        fullRange: true,
+      };
+    }
+
+    // For YUV formats, return user init (or undefined for null values)
+    return init ?? {};
   }
 
   /**
@@ -287,10 +350,10 @@ export class VideoFrame {
   allocationSize(options?: VideoFrameCopyToOptions): number {
     this._checkNotClosed();
 
-    const format = options?.format ?? this.format;
+    const format = options?.format ?? this._format;
     const rect = options?.rect;
-    const width = rect?.width ?? this.visibleRect.width;
-    const height = rect?.height ?? this.visibleRect.height;
+    const width = rect?.width ?? this._visibleRect.width;
+    const height = rect?.height ?? this._visibleRect.height;
 
     return getFrameAllocationSize(format, width, height);
   }
@@ -299,7 +362,7 @@ export class VideoFrame {
    * Returns the number of planes for this frame's format
    */
   get numberOfPlanes(): number {
-    return getPlaneCount(this.format);
+    return this._closed ? 0 : getPlaneCount(this._format);
   }
 
   /**
@@ -320,15 +383,15 @@ export class VideoFrame {
       throw new TypeError('destination must be an ArrayBuffer or ArrayBufferView');
     }
 
-    const destFormat = options?.format ?? this.format;
+    const destFormat = options?.format ?? this._format;
     const rect = options?.rect;
 
-    const srcX = Math.floor(rect?.x ?? this.visibleRect.x);
-    const srcY = Math.floor(rect?.y ?? this.visibleRect.y);
-    const srcW = Math.floor(rect?.width ?? this.visibleRect.width);
-    const srcH = Math.floor(rect?.height ?? this.visibleRect.height);
+    const srcX = Math.floor(rect?.x ?? this._visibleRect.x);
+    const srcY = Math.floor(rect?.y ?? this._visibleRect.y);
+    const srcW = Math.floor(rect?.width ?? this._visibleRect.width);
+    const srcH = Math.floor(rect?.height ?? this._visibleRect.height);
 
-    if (srcX < 0 || srcY < 0 || srcX + srcW > this.codedWidth || srcY + srcH > this.codedHeight) {
+    if (srcX < 0 || srcY < 0 || srcX + srcW > this._codedWidth || srcY + srcH > this._codedHeight) {
       throw new DOMException('Rect is out of bounds', 'ConstraintError');
     }
 
@@ -337,8 +400,8 @@ export class VideoFrame {
       throw new TypeError(`destination buffer is too small (need ${requiredSize}, got ${destArray.byteLength})`);
     }
 
-    if (destFormat === this.format && srcX === 0 && srcY === 0 &&
-        srcW === this.codedWidth && srcH === this.codedHeight) {
+    if (destFormat === this._format && srcX === 0 && srcY === 0 &&
+        srcW === this._codedWidth && srcH === this._codedHeight) {
       destArray.set(this._data);
       return this._getPlaneLayoutForSize(srcW, srcH, destFormat);
     }
@@ -355,7 +418,7 @@ export class VideoFrame {
     srcW: number,
     srcH: number
   ): void {
-    if (this.format === destFormat) {
+    if (this._format === destFormat) {
       this._copyDirectWithClipping(dest, srcX, srcY, srcW, srcH);
       return;
     }
@@ -363,9 +426,9 @@ export class VideoFrame {
     // Use standalone conversion function
     const src: FrameBuffer = {
       data: this._data,
-      format: this.format,
-      width: this.codedWidth,
-      height: this.codedHeight,
+      format: this._format,
+      width: this._codedWidth,
+      height: this._codedHeight,
     };
 
     convertFrameFormat(src, dest, destFormat, srcX, srcY, srcW, srcH);
@@ -378,23 +441,23 @@ export class VideoFrame {
     srcW: number,
     srcH: number
   ): void {
-    const numPlanes = getPlaneCount(this.format);
+    const numPlanes = getPlaneCount(this._format);
     let destOffset = 0;
 
     for (let p = 0; p < numPlanes; p++) {
-      const planeInfo = getPlaneInfo(this.format, this.codedWidth, this.codedHeight, p);
-      const srcPlaneInfo = getPlaneInfo(this.format, this.codedWidth, this.codedHeight, p);
-      const dstPlaneInfo = getPlaneInfo(this.format, srcW, srcH, p);
+      const planeInfo = getPlaneInfo(this._format, this._codedWidth, this._codedHeight, p);
+      const srcPlaneInfo = getPlaneInfo(this._format, this._codedWidth, this._codedHeight, p);
+      const dstPlaneInfo = getPlaneInfo(this._format, srcW, srcH, p);
 
-      const subsampleX = this.codedWidth / srcPlaneInfo.width;
-      const subsampleY = this.codedHeight / srcPlaneInfo.height;
+      const subsampleX = this._codedWidth / srcPlaneInfo.width;
+      const subsampleY = this._codedHeight / srcPlaneInfo.height;
 
       const planeX = Math.floor(srcX / subsampleX);
       const planeY = Math.floor(srcY / subsampleY);
       const planeW = dstPlaneInfo.width;
       const planeH = dstPlaneInfo.height;
 
-      const srcPlaneOffset = getPlaneOffset(this.format, this.codedWidth, this.codedHeight, p);
+      const srcPlaneOffset = getPlaneOffset(this._format, this._codedWidth, this._codedHeight, p);
       const srcStride = srcPlaneInfo.width * srcPlaneInfo.bytesPerPixel;
       const dstStride = planeW * planeInfo.bytesPerPixel;
 
@@ -471,15 +534,15 @@ export class VideoFrame {
     this._checkNotClosed();
     const dataCopy = new Uint8Array(this._data);
     return new VideoFrame(dataCopy, {
-      format: this.format,
-      codedWidth: this.codedWidth,
-      codedHeight: this.codedHeight,
-      timestamp: this.timestamp,
-      duration: this.duration ?? undefined,
-      displayWidth: this.displayWidth,
-      displayHeight: this.displayHeight,
-      visibleRect: this.visibleRect.toJSON(),
-      colorSpace: this.colorSpace.toJSON(),
+      format: this._format,
+      codedWidth: this._codedWidth,
+      codedHeight: this._codedHeight,
+      timestamp: this._timestamp,
+      duration: this._duration ?? undefined,
+      displayWidth: this._displayWidth,
+      displayHeight: this._displayHeight,
+      visibleRect: this._visibleRect.toJSON(),
+      colorSpace: this._colorSpace.toJSON(),
     });
   }
 

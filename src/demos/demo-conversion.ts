@@ -66,11 +66,11 @@ async function createSampleVideo(): Promise<string> {
   console.log('Creating sample video...');
 
   // Create a 5-second test video with testsrc and sine wave audio
-  // 640x480, 30fps, H.264 video + AAC audio
+  // 640x480, 30fps, H.264 video + AAC audio at 48000Hz (Opus-compatible)
   execSync(
     `ffmpeg -y ` +
       `-f lavfi -i "testsrc=duration=5:size=640x480:rate=30" ` +
-      `-f lavfi -i "sine=frequency=440:duration=5" ` +
+      `-f lavfi -i "sine=frequency=440:duration=5:sample_rate=48000" ` +
       `-c:v libx264 -preset ultrafast -c:a aac -b:a 128k ` +
       `-pix_fmt yuv420p ` +
       `"${inputPath}" 2>/dev/null`

@@ -117,6 +117,9 @@ export class NodeAvVideoDecoder extends EventEmitter implements VideoDecoderBack
       try {
         while (this.queue.length > 0) {
           const data = this.queue.shift()!;
+          // Emit chunkAccepted when chunk starts processing (for dequeue event)
+          // Use setImmediate to ensure emit happens after write() returns
+          setImmediate(() => this.emit('chunkAccepted'));
           await this.decodeBuffer(data);
         }
       } catch (err) {

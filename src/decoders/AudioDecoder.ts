@@ -3,7 +3,7 @@
  * https://developer.mozilla.org/en-US/docs/Web/API/AudioDecoder
  */
 
-import { EventEmitter } from 'events';
+import { WebCodecsEventTarget } from '../utils/event-target.js';
 import { AudioData } from '../core/AudioData.js';
 import type { AudioSampleFormat } from '../core/AudioData.js';
 import { EncodedAudioChunk } from '../core/EncodedAudioChunk.js';
@@ -38,7 +38,7 @@ export interface AudioDecoderSupport {
 
 const DEFAULT_FLUSH_TIMEOUT = 30000;
 
-export class AudioDecoder extends EventEmitter {
+export class AudioDecoder extends WebCodecsEventTarget {
   private _state: CodecState = 'unconfigured';
   private _decodeQueueSize = 0;
   private _config: AudioDecoderConfig | null = null;

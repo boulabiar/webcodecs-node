@@ -31,12 +31,18 @@ async function encodeFrames(
   width: number,
   height: number,
   numFrames: number
-): Promise<{ chunks: EncodedVideoChunk[]; error: Error | null }> {
+): Promise<{ chunks: EncodedVideoChunk[]; description?: Uint8Array; error: Error | null }> {
   const chunks: EncodedVideoChunk[] = [];
+  let description: Uint8Array | undefined;
   let err: Error | null = null;
 
   const encoder = new VideoEncoder({
-    output: (chunk) => chunks.push(chunk),
+    output: (chunk, metadata) => {
+      chunks.push(chunk);
+      if (metadata?.decoderConfig?.description) {
+        description = metadata.decoderConfig.description;
+      }
+    },
     error: (e) => { err = e; },
   });
 
@@ -57,7 +63,7 @@ async function encodeFrames(
   await encoder.flush();
   encoder.close();
 
-  return { chunks, error: err };
+  return { chunks, description, error: err };
 }
 
 /**
@@ -68,7 +74,8 @@ async function decodeChunks(
   chunks: EncodedVideoChunk[],
   width: number,
   height: number,
-  outputFormat: 'I420' | 'RGBA' = 'I420'
+  outputFormat: 'I420' | 'RGBA' = 'I420',
+  description?: Uint8Array
 ): Promise<{ frames: VideoFrame[]; error: Error | null }> {
   const frames: VideoFrame[] = [];
   let err: Error | null = null;
@@ -83,6 +90,7 @@ async function decodeChunks(
     codedWidth: width,
     codedHeight: height,
     outputFormat,
+    description,
   });
 
   for (const chunk of chunks) {
@@ -134,11 +142,11 @@ describe('NodeAV VideoDecoder backend', () => {
     it('decodes hevc chunks produced by node-av encoder', async () => {
       const codec = 'hev1.1.6.L93.B0';
 
-      const { chunks, error: encodeError } = await encodeFrames(codec, width, height, numFrames);
+      const { chunks, description, error: encodeError } = await encodeFrames(codec, width, height, numFrames);
       if (encodeError) throw encodeError;
       expect(chunks.length).toBeGreaterThan(0);
 
-      const { frames, error: decodeError } = await decodeChunks(codec, chunks, width, height);
+      const { frames, error: decodeError } = await decodeChunks(codec, chunks, width, height, 'I420', description);
       if (decodeError) throw decodeError;
 
       expect(frames.length).toBeGreaterThan(0);

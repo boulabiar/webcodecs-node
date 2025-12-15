@@ -38,7 +38,6 @@ export {
 export {
   getBestEncoder,
   getBestEncoderSync,
-  getEncoderArgs,
   testEncoder,
   parseCodecString,
 } from './encoder-args.js';
@@ -47,5 +46,4 @@ export {
 export {
   getBestDecoder,
   getBestDecoderSync,
-  getDecoderArgs,
 } from './decoder-args.js';

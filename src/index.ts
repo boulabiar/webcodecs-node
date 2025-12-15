@@ -103,8 +103,6 @@ export {
   testEncoder,
   parseCodecString,
   clearCapabilitiesCache,
-  getEncoderArgs,
-  getDecoderArgs,
 } from './hardware/index.js';
 export type {
   HardwareAccelerationMethod,

@@ -1,8 +1,7 @@
 /**
- * Hardware decoder argument building
+ * Hardware decoder selection
  *
- * Functions for selecting the best decoder and building FFmpeg arguments
- * for hardware-accelerated decoding.
+ * Functions for selecting the best decoder based on hardware capabilities.
  */
 
 import type {
@@ -79,34 +78,3 @@ function selectBestDecoder(
   };
 }
 
-/**
- * Get FFmpeg arguments for hardware-accelerated decoding
- */
-export function getDecoderArgs(
-  decoder: string | null,
-  hwaccel: HardwareAccelerationMethod | null
-): string[] {
-  const args: string[] = [];
-
-  if (hwaccel === 'vaapi') {
-    args.push('-hwaccel', 'vaapi');
-    args.push('-vaapi_device', '/dev/dri/renderD128');
-    args.push('-hwaccel_output_format', 'vaapi');
-  } else if (hwaccel === 'cuda') {
-    args.push('-hwaccel', 'cuda');
-    args.push('-hwaccel_output_format', 'cuda');
-    if (decoder) {
-      args.push('-c:v', decoder);
-    }
-  } else if (hwaccel === 'qsv') {
-    args.push('-hwaccel', 'qsv');
-    args.push('-hwaccel_output_format', 'qsv');
-    if (decoder) {
-      args.push('-c:v', decoder);
-    }
-  } else if (decoder) {
-    args.push('-c:v', decoder);
-  }
-
-  return args;
-}

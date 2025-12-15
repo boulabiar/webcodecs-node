@@ -1,8 +1,7 @@
 /**
- * Hardware encoder argument building
+ * Hardware encoder selection
  *
- * Functions for selecting the best encoder and building FFmpeg arguments
- * for hardware-accelerated encoding.
+ * Functions for selecting the best encoder based on hardware capabilities.
  */
 
 import { spawn } from 'child_process';
@@ -69,81 +68,6 @@ function selectBestEncoder(
     hwaccel: null,
     isHardware: false,
   };
-}
-
-/**
- * Get FFmpeg arguments for hardware-accelerated encoding
- */
-export function getEncoderArgs(
-  encoder: string,
-  hwaccel: HardwareAccelerationMethod | null,
-  options: {
-    bitrate?: number;
-    quality?: number;
-    preset?: string;
-  } = {}
-): string[] {
-  const args: string[] = [];
-
-  // Add hwaccel-specific input/filter options
-  if (hwaccel === 'vaapi') {
-    // VAAPI needs format conversion and upload
-    args.push('-vaapi_device', '/dev/dri/renderD128');
-    args.push('-vf', 'format=nv12,hwupload');
-  } else if (hwaccel === 'cuda' || hwaccel === 'nvenc') {
-    // NVENC can use CUDA for upload
-    args.push('-hwaccel', 'cuda');
-    args.push('-hwaccel_output_format', 'cuda');
-  } else if (hwaccel === 'qsv') {
-    args.push('-hwaccel', 'qsv');
-    args.push('-hwaccel_output_format', 'qsv');
-  }
-
-  // Encoder selection
-  args.push('-c:v', encoder);
-
-  // Encoder-specific options
-  if (encoder.includes('nvenc')) {
-    if (options.preset) {
-      args.push('-preset', options.preset);
-    } else {
-      args.push('-preset', 'p4'); // Balanced preset
-    }
-    if (options.bitrate) {
-      args.push('-b:v', String(options.bitrate));
-    }
-    if (options.quality !== undefined) {
-      args.push('-cq', String(options.quality));
-    }
-  } else if (encoder.includes('qsv')) {
-    if (options.preset) {
-      args.push('-preset', options.preset);
-    }
-    if (options.bitrate) {
-      args.push('-b:v', String(options.bitrate));
-    }
-    if (options.quality !== undefined) {
-      args.push('-global_quality', String(options.quality));
-    }
-  } else if (encoder.includes('vaapi')) {
-    if (options.bitrate) {
-      args.push('-b:v', String(options.bitrate));
-    }
-    if (options.quality !== undefined) {
-      // VAAPI uses rc_mode and quality
-      args.push('-rc_mode', 'CQP');
-      args.push('-qp', String(options.quality));
-    }
-  } else if (encoder.includes('videotoolbox')) {
-    if (options.bitrate) {
-      args.push('-b:v', String(options.bitrate));
-    }
-    if (options.quality !== undefined) {
-      args.push('-q:v', String(options.quality));
-    }
-  }
-
-  return args;
 }
 
 /**

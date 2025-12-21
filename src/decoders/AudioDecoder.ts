@@ -9,7 +9,7 @@ import { validateNonEmptyString, validatePositiveInteger, validateRequired } fro
 import { AudioData } from '../core/AudioData.js';
 import type { AudioSampleFormat } from '../core/AudioData.js';
 import { EncodedAudioChunk } from '../core/EncodedAudioChunk.js';
-import { DOMException } from '../types/index.js';
+import { DOMException, type NativeFrame, hasUnref } from '../types/index.js';
 
 type EventHandler = ((event: Event) => void) | null;
 
@@ -293,7 +293,7 @@ export class AudioDecoder extends WebCodecsEventTarget {
       outputFormat: this._outputFormat,
     });
 
-    this._decoder.on('frame', (frame: { data?: Buffer; nativeFrame?: any; numberOfFrames: number; timestamp: number }) => {
+    this._decoder.on('frame', (frame: { data?: Buffer; nativeFrame?: NativeFrame; numberOfFrames: number; timestamp: number }) => {
       this._handleDecodedFrame(frame);
     });
 
@@ -309,33 +309,43 @@ export class AudioDecoder extends WebCodecsEventTarget {
     }
   }
 
-  private _handleDecodedFrame(frame: { data?: Buffer; nativeFrame?: any; numberOfFrames: number; timestamp: number }): void {
+  private _handleDecodedFrame(frame: { data?: Buffer; nativeFrame?: NativeFrame; numberOfFrames: number; timestamp: number }): void {
     if (!this._config) return;
 
     const timestamp = (this._frameIndex * 1_000_000) / this._config.sampleRate;
 
-    const init: any = {
+    // Build init with optional native frame properties
+    const init: {
+      format: AudioSampleFormat;
+      sampleRate: number;
+      numberOfChannels: number;
+      numberOfFrames: number;
+      timestamp: number;
+      data: Uint8Array;
+      _nativeFrame?: NativeFrame;
+      _nativeCleanup?: () => void;
+    } = {
       format: this._outputFormat,
       sampleRate: this._config.sampleRate,
       numberOfChannels: this._config.numberOfChannels,
       numberOfFrames: frame.numberOfFrames,
       timestamp,
+      data: new Uint8Array(0),
     };
 
     if (frame.nativeFrame) {
       init._nativeFrame = frame.nativeFrame;
       init._nativeCleanup = () => {
         try {
-          frame.nativeFrame.unref?.();
+          if (frame.nativeFrame && hasUnref(frame.nativeFrame)) {
+            frame.nativeFrame.unref();
+          }
         } catch {
           // ignore cleanup errors
         }
       };
-      init.data = new Uint8Array(0);
     } else if (frame.data) {
       init.data = new Uint8Array(frame.data);
-    } else {
-      init.data = new Uint8Array(0);
     }
 
     const audioData = new AudioData(init);

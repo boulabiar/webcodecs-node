@@ -6,7 +6,7 @@
 import { WebCodecsEventTarget } from '../utils/event-target.js';
 import { AudioData } from '../core/AudioData.js';
 import { EncodedAudioChunk } from '../core/EncodedAudioChunk.js';
-import { DOMException } from '../types/index.js';
+import { DOMException, type NativeFrame, hasClone } from '../types/index.js';
 
 type EventHandler = ((event: Event) => void) | null;
 
@@ -24,6 +24,7 @@ import {
 } from '../utils/validation.js';
 import { getCodecBase } from '../utils/codec-cache.js';
 import { encodingError, wrapAsWebCodecsError } from '../utils/errors.js';
+import { acquireBuffer, releaseBuffer } from '../utils/buffer-pool.js';
 
 export type CodecState = 'unconfigured' | 'configured' | 'closed';
 
@@ -209,14 +210,15 @@ export class AudioEncoder extends WebCodecsEventTarget {
 
     this._encodeQueueSize++;
 
-    const nativeFrame = (data as any)._native ?? null;
+    const nativeFrame: NativeFrame | null = data._native;
     let writeSuccess = false;
 
-    if (nativeFrame && typeof (this._encoder as any).writeFrame === 'function') {
-      const clone = typeof nativeFrame.clone === 'function' ? nativeFrame.clone() : null;
+    if (nativeFrame && typeof this._encoder.writeFrame === 'function') {
+      const clone = hasClone(nativeFrame) ? nativeFrame.clone() : null;
       const frameForEncode = clone ?? nativeFrame;
       try {
-        writeSuccess = (this._encoder as any).writeFrame(frameForEncode, true);
+        // Cast to any for node-av Frame type boundary
+        writeSuccess = this._encoder.writeFrame(frameForEncode as any, true);
       } catch {
         writeSuccess = false;
       }
@@ -428,24 +430,37 @@ export class AudioEncoder extends WebCodecsEventTarget {
     const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
     const isPlanar = format.endsWith('-planar');
-    const tempBuffer = new Float32Array(numFrames);
 
     if (isPlanar) {
-      for (let ch = 0; ch < numChannels; ch++) {
-        data.copyTo(new Uint8Array(tempBuffer.buffer), {
-          planeIndex: ch,
-          format: 'f32-planar',
-        });
+      // Use pooled buffer for temporary Float32 storage
+      const tempBytes = acquireBuffer(numFrames * 4);
+      const tempBuffer = new Float32Array(
+        tempBytes.buffer, tempBytes.byteOffset, numFrames
+      );
+      try {
+        for (let ch = 0; ch < numChannels; ch++) {
+          data.copyTo(new Uint8Array(tempBuffer.buffer, tempBuffer.byteOffset, tempBuffer.byteLength), {
+            planeIndex: ch,
+            format: 'f32-planar',
+          });
 
-        for (let frame = 0; frame < numFrames; frame++) {
-          const offset = (frame * numChannels + ch) * 4;
-          view.setFloat32(offset, tempBuffer[frame], true);
+          for (let frame = 0; frame < numFrames; frame++) {
+            const offset = (frame * numChannels + ch) * 4;
+            view.setFloat32(offset, tempBuffer[frame], true);
+          }
         }
+      } finally {
+        releaseBuffer(tempBytes);
       }
     } else {
-      const srcBuffer = new Uint8Array(bufferSize);
-      data.copyTo(srcBuffer, { planeIndex: 0, format: 'f32' });
-      buffer.set(srcBuffer);
+      // Use pooled buffer for temporary copy
+      const srcBuffer = acquireBuffer(bufferSize);
+      try {
+        data.copyTo(srcBuffer.subarray(0, bufferSize), { planeIndex: 0, format: 'f32' });
+        buffer.set(srcBuffer.subarray(0, bufferSize));
+      } finally {
+        releaseBuffer(srcBuffer);
+      }
     }
 
     return buffer;

@@ -3,8 +3,8 @@
  * https://developer.mozilla.org/en-US/docs/Web/API/VideoFrame
  */
 
-import type { BufferSource, DOMRectInit, PlaneLayout } from '../types/index.js';
-import { DOMException, DOMRectReadOnly } from '../types/index.js';
+import type { BufferSource, DOMRectInit, PlaneLayout, NativeFrame } from '../types/index.js';
+import { DOMException, DOMRectReadOnly, isNativeFrame } from '../types/index.js';
 import { toUint8Array } from '../utils/buffer.js';
 import type { VideoColorSpaceInit } from '../formats/index.js';
 import {
@@ -48,7 +48,7 @@ import {
 export class VideoFrame {
   private _data: Uint8Array;
   private _closed = false;
-  private _nativeFrame: any | null = null;
+  private _nativeFrame: NativeFrame | null = null;
   private _nativeCleanup: (() => void) | null = null;
 
   private _format: VideoPixelFormat;
@@ -167,8 +167,8 @@ export class VideoFrame {
         throw new TypeError('timestamp is required');
       }
 
-      this._nativeFrame = dataOrImage;
-      this._nativeCleanup = (init as any)._nativeCleanup ?? null;
+      this._nativeFrame = dataOrImage as NativeFrame;
+      this._nativeCleanup = (init as { _nativeCleanup?: () => void })._nativeCleanup ?? null;
       this._data = new Uint8Array(0);
 
       this._format = bufferInit.format;
@@ -648,7 +648,7 @@ export class VideoFrame {
     return this._data;
   }
 
-  get _native(): any | null {
+  get _native(): NativeFrame | null {
     return this._closed ? null : this._nativeFrame;
   }
 
@@ -658,13 +658,8 @@ export class VideoFrame {
     }
   }
 
-  private _isNativeFrame(obj: unknown): obj is object {
-    return Boolean(
-      obj &&
-      typeof obj === 'object' &&
-      typeof (obj as any).toBuffer === 'function' &&
-      typeof (obj as any).unref === 'function'
-    );
+  private _isNativeFrame(obj: unknown): obj is NativeFrame {
+    return isNativeFrame(obj);
   }
 
   private _ensureDataLoaded(): void {

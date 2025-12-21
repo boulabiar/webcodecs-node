@@ -36,3 +36,13 @@ export {
   type AudioDataInit,
   type AudioDataCopyToOptions,
 } from './audio.js';
+
+// Native frame types (for node-av integration)
+export {
+  type NativeFrame,
+  type NativeVideoFrame,
+  type NativeAudioFrame,
+  isNativeFrame,
+  hasUnref,
+  hasClone,
+} from './native-frame.js';

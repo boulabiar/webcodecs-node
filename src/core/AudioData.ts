@@ -3,7 +3,7 @@
  * https://developer.mozilla.org/en-US/docs/Web/API/AudioData
  */
 
-import { DOMException } from '../types/index.js';
+import { DOMException, type NativeFrame } from '../types/index.js';
 import {
   type AudioSampleFormat,
   type AudioDataInit,
@@ -25,7 +25,7 @@ export class AudioData {
   private _timestamp: number;
   private _duration: number;
   private _buffer: ArrayBuffer;
-  private _nativeFrame: any | null = null;
+  private _nativeFrame: NativeFrame | null = null;
   private _nativeCleanup: (() => void) | null = null;
   private _closed = false;
 
@@ -54,8 +54,8 @@ export class AudioData {
       throw new TypeError('timestamp is required');
     }
 
-    const nativeFrame = (init as any)._nativeFrame;
-    this._nativeCleanup = (init as any)._nativeCleanup ?? null;
+    const nativeFrame = (init as { _nativeFrame?: NativeFrame })._nativeFrame;
+    this._nativeCleanup = (init as { _nativeCleanup?: () => void })._nativeCleanup ?? null;
 
     if (!init.data && !nativeFrame) {
       throw new TypeError('data is required');
@@ -194,7 +194,7 @@ export class AudioData {
     return this._buffer;
   }
 
-  get _native(): any | null {
+  get _native(): NativeFrame | null {
     return this._closed ? null : this._nativeFrame;
   }
 

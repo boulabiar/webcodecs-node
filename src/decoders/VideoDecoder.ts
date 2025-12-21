@@ -10,7 +10,7 @@ import { VideoFrame } from '../core/VideoFrame.js';
 import type { VideoPixelFormat } from '../core/VideoFrame.js';
 import { EncodedVideoChunk } from '../core/EncodedVideoChunk.js';
 import { NodeAvVideoDecoder } from '../node-av/NodeAvVideoDecoder.js';
-import { DOMException } from '../types/index.js';
+import { DOMException, type NativeFrame, hasUnref } from '../types/index.js';
 
 type EventHandler = ((event: Event) => void) | null;
 
@@ -354,7 +354,7 @@ export class VideoDecoder extends WebCodecsEventTarget {
       hardwareAcceleration: this._hardwarePreference,
     });
 
-    this._decoder.on('frame', (data: Buffer | { nativeFrame: any }) => {
+    this._decoder.on('frame', (data: Buffer | { nativeFrame: NativeFrame }) => {
       this._handleDecodedFrame(data);
     });
 
@@ -426,16 +426,16 @@ export class VideoDecoder extends WebCodecsEventTarget {
     }
   }
 
-  private _handleDecodedFrame(data: Buffer | { nativeFrame: any }): void {
+  private _handleDecodedFrame(data: Buffer | { nativeFrame: NativeFrame }): void {
     if (!this._config) return;
 
     const chunkInfo = this._pendingChunks.shift();
     const timestamp = chunkInfo?.timestamp ?? this._frameTimestamp;
     const duration = chunkInfo?.duration ?? this._frameDuration;
 
-    const isNative = typeof data === 'object' && (data as any)?.nativeFrame;
+    const isNative = typeof data === 'object' && 'nativeFrame' in data;
     const frame = isNative
-      ? new VideoFrame((data as any).nativeFrame, {
+      ? new VideoFrame(data.nativeFrame, {
         format: this._outputFormat,
         codedWidth: this._config.codedWidth!,
         codedHeight: this._config.codedHeight!,
@@ -444,12 +444,14 @@ export class VideoDecoder extends WebCodecsEventTarget {
         colorSpace: this._config.colorSpace,
         _nativeCleanup: () => {
           try {
-            (data as any).nativeFrame.unref?.();
+            if (hasUnref(data.nativeFrame)) {
+              data.nativeFrame.unref();
+            }
           } catch {
             // ignore cleanup errors
           }
         },
-      } as any)
+      } as { format: VideoPixelFormat; codedWidth: number; codedHeight: number; timestamp: number; duration?: number; colorSpace?: VideoColorSpaceInit; _nativeCleanup?: () => void })
       : new VideoFrame(data as Buffer, {
         format: this._outputFormat,
         codedWidth: this._config.codedWidth!,

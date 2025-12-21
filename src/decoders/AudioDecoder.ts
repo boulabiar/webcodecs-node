@@ -57,6 +57,7 @@ export class AudioDecoder extends WebCodecsEventTarget {
   private _outputFormat: AudioSampleFormat = 'f32';
   private _aacConfig: AacConfig | null = null;
   private _ondequeue: EventHandler | null = null;
+  private _flushPromise: Promise<void> | null = null;
 
   constructor(init: AudioDecoderInit) {
     super();
@@ -158,6 +159,14 @@ export class AudioDecoder extends WebCodecsEventTarget {
       throw new DOMException('Decoder is not configured', 'InvalidStateError');
     }
 
+    // Prevent decoding during flush to avoid race conditions
+    if (this._flushPromise) {
+      throw new DOMException(
+        'Cannot decode while flush is pending. Wait for flush() to complete.',
+        'InvalidStateError'
+      );
+    }
+
     if (!(chunk instanceof EncodedAudioChunk)) {
       throw new TypeError('chunk must be an EncodedAudioChunk');
     }
@@ -192,7 +201,12 @@ export class AudioDecoder extends WebCodecsEventTarget {
       throw new DOMException('Decoder is not configured', 'InvalidStateError');
     }
 
-    return new Promise((resolve, reject) => {
+    // If flush is already pending, return the existing promise
+    if (this._flushPromise) {
+      return this._flushPromise;
+    }
+
+    this._flushPromise = new Promise<void>((resolve, reject) => {
       if (!this._decoder) {
         resolve();
         return;
@@ -215,6 +229,7 @@ export class AudioDecoder extends WebCodecsEventTarget {
         this._decodeQueueSize = 0;
         this._frameIndex = 0;
         this._decoder = null;
+        this._flushPromise = null;
         if (this._config) {
           this._startDecoder();
         }
@@ -225,6 +240,7 @@ export class AudioDecoder extends WebCodecsEventTarget {
         if (resolved) return;
         resolved = true;
         cleanup();
+        this._flushPromise = null;
         reject(err);
       };
 
@@ -236,6 +252,8 @@ export class AudioDecoder extends WebCodecsEventTarget {
       this._decoder.once('error', doReject);
       this._decoder.end();
     });
+
+    return this._flushPromise;
   }
 
   reset(): void {
@@ -249,6 +267,7 @@ export class AudioDecoder extends WebCodecsEventTarget {
     this._decodeQueueSize = 0;
     this._frameIndex = 0;
     this._aacConfig = null;
+    this._flushPromise = null;
   }
 
   close(): void {
@@ -259,6 +278,7 @@ export class AudioDecoder extends WebCodecsEventTarget {
     this._config = null;
     this._decodeQueueSize = 0;
     this._aacConfig = null;
+    this._flushPromise = null;
   }
 
   private _startDecoder(): void {

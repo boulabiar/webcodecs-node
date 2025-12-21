@@ -72,6 +72,7 @@ export class AudioEncoder extends WebCodecsEventTarget {
   private _bitstreamFormat: 'adts' | 'aac' = 'adts';
   private _codecDescription: Uint8Array | null = null;
   private _ondequeue: EventHandler | null = null;
+  private _flushPromise: Promise<void> | null = null;
 
   constructor(init: AudioEncoderInit) {
     super();
@@ -180,6 +181,14 @@ export class AudioEncoder extends WebCodecsEventTarget {
       throw new DOMException('Encoder is not configured', 'InvalidStateError');
     }
 
+    // Prevent encoding during flush to avoid race conditions
+    if (this._flushPromise) {
+      throw new DOMException(
+        'Cannot encode while flush is pending. Wait for flush() to complete.',
+        'InvalidStateError'
+      );
+    }
+
     if (!(data instanceof AudioData)) {
       throw new TypeError('data must be an AudioData');
     }
@@ -233,7 +242,12 @@ export class AudioEncoder extends WebCodecsEventTarget {
       throw new DOMException('Encoder is not configured', 'InvalidStateError');
     }
 
-    return new Promise((resolve, reject) => {
+    // If flush is already pending, return the existing promise
+    if (this._flushPromise) {
+      return this._flushPromise;
+    }
+
+    this._flushPromise = new Promise<void>((resolve, reject) => {
       if (!this._encoder) {
         resolve();
         return;
@@ -257,6 +271,7 @@ export class AudioEncoder extends WebCodecsEventTarget {
         this._frameCount = 0;
         this._firstChunk = true;
         this._encoder = null;
+        this._flushPromise = null;
         if (this._config) {
           this._startEncoder();
         }
@@ -267,6 +282,7 @@ export class AudioEncoder extends WebCodecsEventTarget {
         if (resolved) return;
         resolved = true;
         cleanup();
+        this._flushPromise = null;
         reject(err);
       };
 
@@ -278,6 +294,8 @@ export class AudioEncoder extends WebCodecsEventTarget {
       this._encoder.once('error', doReject);
       this._encoder.end();
     });
+
+    return this._flushPromise;
   }
 
   reset(): void {
@@ -292,6 +310,7 @@ export class AudioEncoder extends WebCodecsEventTarget {
     this._frameCount = 0;
     this._firstChunk = true;
     this._codecDescription = null;
+    this._flushPromise = null;
   }
 
   close(): void {
@@ -302,6 +321,7 @@ export class AudioEncoder extends WebCodecsEventTarget {
     this._config = null;
     this._encodeQueueSize = 0;
     this._codecDescription = null;
+    this._flushPromise = null;
   }
 
   private _startEncoder(): void {

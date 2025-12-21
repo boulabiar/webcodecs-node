@@ -74,6 +74,7 @@ export class VideoEncoder extends WebCodecsEventTarget {
   private _inputFormat: VideoPixelFormat | null = null;
   private _hardwarePreference: 'no-preference' | 'prefer-hardware' | 'prefer-software' = 'no-preference';
   private _ondequeue: EventHandler | null = null;
+  private _flushPromise: Promise<void> | null = null;
 
   constructor(init: VideoEncoderInit) {
     super();
@@ -202,6 +203,14 @@ export class VideoEncoder extends WebCodecsEventTarget {
       throw new DOMException('Encoder is not configured', 'InvalidStateError');
     }
 
+    // Prevent encoding during flush to avoid race conditions
+    if (this._flushPromise) {
+      throw new DOMException(
+        'Cannot encode while flush is pending. Wait for flush() to complete.',
+        'InvalidStateError'
+      );
+    }
+
     if (!(frame instanceof VideoFrame)) {
       throw new TypeError('frame must be a VideoFrame');
     }
@@ -265,7 +274,12 @@ export class VideoEncoder extends WebCodecsEventTarget {
       throw new DOMException('Encoder is not configured', 'InvalidStateError');
     }
 
-    return new Promise((resolve, reject) => {
+    // If flush is already pending, return the existing promise
+    if (this._flushPromise) {
+      return this._flushPromise;
+    }
+
+    this._flushPromise = new Promise<void>((resolve, reject) => {
       if (!this._encoder) {
         resolve();
         return;
@@ -291,6 +305,7 @@ export class VideoEncoder extends WebCodecsEventTarget {
         this._inputFormat = null;
         this._frameCount = 0;
         this._firstChunk = true;
+        this._flushPromise = null;
         resolve();
       };
 
@@ -298,6 +313,7 @@ export class VideoEncoder extends WebCodecsEventTarget {
         if (resolved) return;
         resolved = true;
         cleanup();
+        this._flushPromise = null;
         reject(err);
       };
 
@@ -309,6 +325,8 @@ export class VideoEncoder extends WebCodecsEventTarget {
       this._encoder.once('close', doResolve);
       this._encoder.once('error', doReject);
     });
+
+    return this._flushPromise;
   }
 
   reset(): void {
@@ -324,6 +342,7 @@ export class VideoEncoder extends WebCodecsEventTarget {
     this._frameCount = 0;
     this._firstChunk = true;
     this._inputFormat = null;
+    this._flushPromise = null;
   }
 
   close(): void {
@@ -334,6 +353,7 @@ export class VideoEncoder extends WebCodecsEventTarget {
     this._config = null;
     this._encodeQueueSize = 0;
     this._pendingFrames = [];
+    this._flushPromise = null;
   }
 
   private _startEncoder(inputFormat?: string): void {

@@ -194,6 +194,11 @@ export class NodeAvAudioDecoder extends EventEmitter implements AudioDecoderBack
 
     await this.decoder.decode(packet);
     packet.unref();
+
+    // Emit chunkAccepted after packet is successfully decoded
+    // This allows AudioDecoder to track queue size per chunk, not per frame
+    this.emit('chunkAccepted');
+
     await this.drainFrames();
     this.packetIndex++;
   }

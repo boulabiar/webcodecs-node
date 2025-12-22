@@ -9,7 +9,9 @@ This document provides detailed API documentation for webcodecs-node.
 - [AudioEncoder](#audioencoder)
 - [AudioDecoder](#audiodecoder)
 - [ImageDecoder](#imagedecoder)
+- [ImageEncoder](#imageencoder)
 - [VideoFrame](#videoframe)
+- [VideoColorSpace](#videocolorspace)
 - [AudioData](#audiodata)
 - [EncodedVideoChunk](#encodedvideochunk)
 - [EncodedAudioChunk](#encodedaudiochunk)
@@ -289,6 +291,63 @@ Close the decoder.
 
 ---
 
+## ImageEncoder
+
+Encodes VideoFrames to image formats (PNG, JPEG, WebP). This is a utility class (not part of WebCodecs spec) that mirrors ImageDecoder.
+
+### Static Methods
+
+#### `isTypeSupported(type: string): boolean`
+
+Check if an output format is supported.
+
+```typescript
+ImageEncoder.isTypeSupported('image/webp'); // true
+ImageEncoder.isTypeSupported('image/gif');  // false
+```
+
+#### `encode(frame: VideoFrame, options?: ImageEncoderOptions): Promise<ImageEncoderResult>`
+
+Encode a VideoFrame to an image format asynchronously.
+
+```typescript
+const result = await ImageEncoder.encode(frame, {
+  type: 'image/jpeg',
+  quality: 0.85,
+});
+fs.writeFileSync('output.jpg', Buffer.from(result.data));
+```
+
+#### `encodeSync(frame: VideoFrame, options?: ImageEncoderOptions): ImageEncoderResult`
+
+Encode a VideoFrame synchronously.
+
+```typescript
+const result = ImageEncoder.encodeSync(frame, { type: 'image/png' });
+```
+
+#### `encodeBatch(frames: VideoFrame[], options?: ImageEncoderOptions): Promise<ImageEncoderResult[]>`
+
+Encode multiple frames in parallel.
+
+```typescript
+const results = await ImageEncoder.encodeBatch(frames, { type: 'image/webp' });
+```
+
+### Types
+
+**ImageEncoderOptions:**
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `type` | `'image/png' \| 'image/jpeg' \| 'image/webp'` | `'image/png'` | Output format |
+| `quality` | number | 0.92 (JPEG), 0.8 (WebP) | Quality for lossy formats (0-1) |
+
+**ImageEncoderResult:**
+- `data: ArrayBuffer` - Encoded image data
+- `type: string` - MIME type of the encoded image
+
+---
+
 ## VideoFrame
 
 Represents a single video frame with raw pixel data.
@@ -311,6 +370,8 @@ new VideoFrame(data: BufferSource, init: VideoFrameBufferInit)
 | `displayHeight` | number | No | Display height |
 
 **Supported VideoPixelFormat values:**
+
+*8-bit formats:*
 - `'I420'` - YUV 4:2:0 planar
 - `'I420A'` - YUV 4:2:0 planar with alpha
 - `'I422'` - YUV 4:2:2 planar
@@ -320,6 +381,12 @@ new VideoFrame(data: BufferSource, init: VideoFrameBufferInit)
 - `'RGBX'` - 8-bit RGB (alpha ignored)
 - `'BGRA'` - 8-bit BGRA
 - `'BGRX'` - 8-bit BGR (alpha ignored)
+
+*10-bit formats (HDR):*
+- `'I420P10'` - YUV 4:2:0 planar, 10-bit (16-bit container)
+- `'I422P10'` - YUV 4:2:2 planar, 10-bit (16-bit container)
+- `'I444P10'` - YUV 4:4:4 planar, 10-bit (16-bit container)
+- `'P010'` - YUV 4:2:0 semi-planar, 10-bit (16-bit container)
 
 ### Instance Methods
 
@@ -348,6 +415,92 @@ Release frame resources. Always call this when done.
 - `displayHeight: number`
 - `timestamp: number`
 - `duration: number | null`
+- `colorSpace: VideoColorSpace` - Color space information
+
+---
+
+## VideoColorSpace
+
+Describes the color space of a video frame, including HDR metadata.
+
+### Constructor
+
+```typescript
+new VideoColorSpace(init?: VideoColorSpaceInit)
+```
+
+**VideoColorSpaceInit:**
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `primaries` | string | null | Color primaries ('bt709', 'bt2020', 'smpte432') |
+| `transfer` | string | null | Transfer function ('bt709', 'pq', 'hlg', 'srgb') |
+| `matrix` | string | null | Matrix coefficients ('bt709', 'bt2020-ncl') |
+| `fullRange` | boolean | null | Full vs limited range |
+| `hdrMetadata` | HdrMetadata | null | HDR mastering metadata |
+
+### Properties
+
+- `primaries: string | null` - Color primaries
+- `transfer: string | null` - Transfer function
+- `matrix: string | null` - Matrix coefficients
+- `fullRange: boolean | null` - Full range flag
+- `hdrMetadata: HdrMetadata | null` - HDR metadata (if present)
+- `isHdr: boolean` - True if PQ or HLG transfer
+- `hasHdrMetadata: boolean` - True if HDR metadata is set
+
+### Instance Methods
+
+#### `toJSON(): VideoColorSpaceInit`
+
+Serialize to JSON-compatible object.
+
+### HDR Metadata Types
+
+**HdrMetadata:**
+```typescript
+interface HdrMetadata {
+  smpteSt2086?: SmpteSt2086Metadata;   // Mastering display metadata
+  contentLightLevel?: ContentLightLevelInfo;  // Content light levels
+}
+```
+
+**SmpteSt2086Metadata (Mastering Display):**
+| Property | Type | Description |
+|----------|------|-------------|
+| `primaryRChromaticityX/Y` | number | Red primary chromaticity |
+| `primaryGChromaticityX/Y` | number | Green primary chromaticity |
+| `primaryBChromaticityX/Y` | number | Blue primary chromaticity |
+| `whitePointChromaticityX/Y` | number | White point chromaticity |
+| `maxLuminance` | number | Maximum luminance (nits) |
+| `minLuminance` | number | Minimum luminance (nits) |
+
+**ContentLightLevelInfo:**
+| Property | Type | Description |
+|----------|------|-------------|
+| `maxCLL` | number | Maximum Content Light Level (nits) |
+| `maxFALL` | number | Maximum Frame Average Light Level (nits) |
+
+### Helper Functions
+
+#### `createHdr10MasteringMetadata(maxLuminance, minLuminance?): SmpteSt2086Metadata`
+
+Create HDR10 mastering metadata with BT.2020 primaries.
+
+```typescript
+const metadata = createHdr10MasteringMetadata(1000, 0.0001);
+```
+
+#### `createContentLightLevel(maxCLL, maxFALL): ContentLightLevelInfo`
+
+Create content light level info.
+
+```typescript
+const cll = createContentLightLevel(800, 400);
+```
+
+#### `HDR10_DISPLAY_PRIMARIES`
+
+Constant with standard BT.2020 display primaries.
 
 ---
 

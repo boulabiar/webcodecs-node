@@ -9,6 +9,7 @@ This package provides a Node.js-compatible implementation of the [WebCodecs API]
 - **VideoEncoder / VideoDecoder** - H.264, HEVC, VP8, VP9, AV1
 - **AudioEncoder / AudioDecoder** - AAC, Opus, MP3, FLAC, Vorbis
 - **ImageDecoder** - PNG, JPEG, WebP, GIF, AVIF, BMP, TIFF (including animated with frame timing)
+- **ImageEncoder** - Encode VideoFrames to PNG, JPEG, WebP
 - **VideoFrame / AudioData** - Frame-level data manipulation
 - **MediaCapabilities** - Query codec support, smooth playback, and power efficiency
 - **Hardware Acceleration** - VAAPI, NVENC, QSV support
@@ -16,6 +17,7 @@ This package provides a Node.js-compatible implementation of the [WebCodecs API]
 - **Latency Modes** - Configure for real-time streaming vs maximum compression
 - **Bitrate Modes** - Constant, variable, and quantizer (CRF) encoding modes
 - **Alpha Channel** - Preserve transparency with VP9 and AV1 codecs
+- **10-bit & HDR** - I420P10, P010 formats with HDR10 metadata support
 - **Container Support** - MP4, WebM demuxing/muxing utilities
 
 ## Documentation
@@ -246,6 +248,36 @@ decoder.close();
 - `image/bmp`
 - `image/tiff`
 
+### ImageEncoder
+
+Encodes VideoFrames to image formats (PNG, JPEG, WebP). This is a utility class that mirrors ImageDecoder.
+
+```typescript
+import { ImageEncoder, VideoFrame } from 'webcodecs-node';
+
+// Check format support
+ImageEncoder.isTypeSupported('image/webp'); // true
+
+// Encode a frame to JPEG
+const result = await ImageEncoder.encode(frame, {
+  type: 'image/jpeg',
+  quality: 0.85,
+});
+
+fs.writeFileSync('output.jpg', Buffer.from(result.data));
+
+// Synchronous encoding
+const pngResult = ImageEncoder.encodeSync(frame, { type: 'image/png' });
+
+// Batch encode multiple frames
+const results = await ImageEncoder.encodeBatch(frames, { type: 'image/webp' });
+```
+
+**Supported output formats:**
+- `image/png` - Lossless, supports transparency
+- `image/jpeg` - Lossy, quality 0-1 (default: 0.92)
+- `image/webp` - Lossy/lossless, quality 0-1 (default: 0.8)
+
 ### MediaCapabilities API
 
 Query codec capabilities before encoding/decoding. Implements the standard [MediaCapabilities API](https://developer.mozilla.org/en-US/docs/Web/API/MediaCapabilities).
@@ -418,6 +450,65 @@ const frame = new VideoFrame(rgbaWithAlpha, {
 
 encoder.encode(frame);
 ```
+
+### 10-bit Pixel Formats & HDR
+
+Support for high bit-depth content and HDR metadata:
+
+```typescript
+import {
+  VideoFrame,
+  VideoColorSpace,
+  createHdr10MasteringMetadata,
+  createContentLightLevel,
+  is10BitFormat,
+  getBitDepth,
+} from 'webcodecs-node';
+
+// Create a 10-bit frame
+const frame = new VideoFrame(yuv10bitData, {
+  format: 'I420P10',  // 10-bit YUV 4:2:0
+  codedWidth: 3840,
+  codedHeight: 2160,
+  timestamp: 0,
+  colorSpace: new VideoColorSpace({
+    primaries: 'bt2020',
+    transfer: 'pq',        // HDR10 PQ transfer
+    matrix: 'bt2020-ncl',
+  }),
+});
+
+// Check format properties
+console.log(is10BitFormat('I420P10'));  // true
+console.log(getBitDepth('I420P10'));    // 10
+
+// HDR metadata for mastering display
+const hdrMetadata = {
+  smpteSt2086: createHdr10MasteringMetadata(1000, 0.0001), // max/min luminance
+  contentLightLevel: createContentLightLevel(800, 400),    // MaxCLL, MaxFALL
+};
+
+const colorSpace = new VideoColorSpace({
+  primaries: 'bt2020',
+  transfer: 'pq',
+  hdrMetadata,
+});
+
+console.log(colorSpace.isHdr);          // true
+console.log(colorSpace.hasHdrMetadata); // true
+```
+
+**10-bit pixel formats:**
+- `I420P10` - YUV 4:2:0 planar, 10-bit
+- `I422P10` - YUV 4:2:2 planar, 10-bit
+- `I444P10` - YUV 4:4:4 planar, 10-bit
+- `P010` - YUV 4:2:0 semi-planar, 10-bit
+
+**Pixel format utilities:**
+- `is10BitFormat(format)` - Check if format is 10-bit
+- `getBitDepth(format)` - Get bit depth (8 or 10)
+- `get8BitEquivalent(format)` - Get 8-bit version of a 10-bit format
+- `get10BitEquivalent(format)` - Get 10-bit version of an 8-bit format
 
 ### Canvas Rendering (skia-canvas)
 
@@ -594,6 +685,46 @@ npm run demo:fourcorners
 
 # 1080p transcoding demo
 npm run demo:1080p
+```
+
+## Benchmarking
+
+Compare software vs hardware encoding performance:
+
+```bash
+# Quick benchmark (30 frames, 360p)
+npm run bench:quick
+
+# Default benchmark (120 frames, 720p)
+npm run bench
+
+# Full benchmark (300 frames, 1080p)
+npm run bench:full
+
+# Custom options
+node scripts/encoding-benchmark.mjs --frames 100 --resolution 1080p --codecs h264,hevc
+```
+
+**Options:**
+- `--frames <n>` - Number of frames to encode (default: 120)
+- `--resolution <res>` - 360p, 480p, 720p, 1080p, 4k (default: 720p)
+- `--bitrate <bps>` - Target bitrate in bps
+- `--framerate <fps>` - Target framerate (default: 30)
+- `--codecs <list>` - Comma-separated: h264,hevc,vp9,av1
+- `--skip-software` - Only test hardware encoding
+- `--verbose` - Show detailed output
+
+**Example output:**
+```
+════════════════════════════════════════════════════════════════════════════════
+ENCODING BENCHMARK RESULTS (720p)
+════════════════════════════════════════════════════════════════════════════════
+Codec       Mode           FPS      Time   Latency        Size       Bitrate
+────────────────────────────────────────────────────────────────────────────────
+H.264/AVC   SW           213.6     562ms     391ms     2.00 MB     4.20 Mbps
+H.264/AVC   HW           370.4     324ms     187ms     2.11 MB     4.43 Mbps
+H.265/HEVC  SW           141.4     848ms     106ms     1.94 MB     4.06 Mbps
+H.265/HEVC  HW           589.0     204ms      61ms     2.16 MB     4.54 Mbps
 ```
 
 ## API Compatibility

@@ -188,11 +188,12 @@ export class Muxer {
 
     // Create an encoder to properly configure the output stream
     // The encoder sets up codec parameters that the muxer needs
+    // Use microsecond timeBase (1/1000000) to match WebCodecs timestamp units
     this._videoEncoder = await NodeAvEncoder.create(codecId as any, {
       width: config.codedWidth,
       height: config.codedHeight,
       pixelFormat: AV_PIX_FMT_YUV420P,
-      timeBase: { num: 1, den: config.framerate || 30 },
+      timeBase: { num: 1, den: 1_000_000 }, // Microseconds - matches WebCodecs
       frameRate: { num: config.framerate || 30, den: 1 },
       bitrate: config.bitrate || 1_000_000,
       gopSize: 30,
@@ -220,10 +221,12 @@ export class Muxer {
     const codecId = mapAudioCodecId(config.codec);
 
     // Create an encoder to properly configure the output stream
+    // Use microsecond timeBase (1/1000000) to match WebCodecs timestamp units
     this._audioEncoder = await NodeAvEncoder.create(codecId as any, {
       sampleRate: config.sampleRate,
       channels: config.numberOfChannels,
       sampleFormat: AV_SAMPLE_FMT_FLTP,
+      timeBase: { num: 1, den: 1_000_000 }, // Microseconds - matches WebCodecs
       bitrate: config.bitrate || 128_000,
       // Set extradata from description (AudioSpecificConfig for AAC, etc.)
       extradata: config.description ? Buffer.from(config.description) : undefined,

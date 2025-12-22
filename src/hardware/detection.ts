@@ -123,15 +123,18 @@ function buildCapabilities(): HardwareCapabilities {
     capabilities.methods = hwaccels;
 
     const availableEncoders = collectEncoders();
+    // Note: collectEncoders returns codec names (e.g., 'h264') not encoder names (e.g., 'h264_vaapi')
+    // So we need to check if the hwaccel method is available AND the codec is supported
     capabilities.encoders = HARDWARE_ENCODERS.map(enc => ({
       ...enc,
-      available: availableEncoders.includes(enc.name),
+      available: hwaccels.includes(enc.hwaccel) && availableEncoders.includes(enc.codec),
     }));
 
     const availableDecoders = collectDecoders();
+    // Same for decoders - check hwaccel method AND codec support
     capabilities.decoders = HARDWARE_DECODERS.map(dec => ({
       ...dec,
-      available: availableDecoders.includes(dec.name),
+      available: hwaccels.includes(dec.hwaccel) && availableDecoders.includes(dec.codec),
     }));
 
     capabilities.detected = true;

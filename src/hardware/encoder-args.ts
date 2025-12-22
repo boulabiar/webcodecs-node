@@ -76,11 +76,13 @@ function selectBestEncoder(
  */
 export async function testEncoder(encoderName: string): Promise<boolean> {
   return new Promise((resolve) => {
+    // Use 320x240 to meet minimum hardware encoder constraints
+    // (e.g., AMD VAAPI requires at least 256x128)
     const testArgs = [
       '-hide_banner',
       '-loglevel', 'error',
       '-f', 'lavfi',
-      '-i', 'color=c=black:s=64x64:d=0.1',
+      '-i', 'color=c=black:s=320x240:d=0.1',
       '-c:v', encoderName,
       '-frames:v', '1',
       '-f', 'null',
@@ -99,13 +101,10 @@ export async function testEncoder(encoderName: string): Promise<boolean> {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    let hasError = false;
-    proc.stderr?.on('data', () => {
-      hasError = true;
-    });
-
+    // Note: We only check exit code, not stderr, because FFmpeg outputs
+    // warnings (like "packed headers" for VAAPI) to stderr even on success
     proc.on('close', (code) => {
-      resolve(code === 0 && !hasError);
+      resolve(code === 0);
     });
 
     proc.on('error', () => {

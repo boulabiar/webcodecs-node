@@ -231,6 +231,7 @@ async function demo3_Roundtrip(): Promise<void> {
       codec: decoderConfig.codec,
       codedWidth: decoderConfig.codedWidth || width,
       codedHeight: decoderConfig.codedHeight || height,
+      description: decoderConfig.description, // SPS/PPS for H.264
     });
 
     console.log('  Decoding chunks...');

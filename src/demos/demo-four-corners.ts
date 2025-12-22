@@ -174,6 +174,12 @@ async function main() {
   let timestampUs = 0;
   for await (const { chunk, keyFrame } of streamAnnexBFrames(MEDIA_FILE)) {
     if (decodedFrames.length >= FRAMES_TO_RENDER) break;
+
+    // Wait if decoder queue is getting full (backpressure)
+    while (decoder.decodeQueueSize >= 50) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
     const encoded = new EncodedVideoChunk({
       type: keyFrame ? 'key' : 'delta',
       timestamp: timestampUs,
@@ -210,6 +216,7 @@ async function main() {
     bitrate: 4_000_000,
     latencyMode: 'realtime',
     hardwareAcceleration: 'prefer-hardware',
+    format: 'annexb', // Required for raw H.264 muxing with ffmpeg
   });
 
   for (let i = 0; i < Math.min(decodedFrames.length, FRAMES_TO_RENDER); i++) {

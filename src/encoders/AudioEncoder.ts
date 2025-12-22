@@ -60,6 +60,9 @@ export interface AudioEncoderSupport {
 const DEFAULT_FLUSH_TIMEOUT = 30000;
 const MAX_QUEUE_SIZE = 100; // Prevent unbounded memory growth
 
+/** Opus always encodes at 48kHz regardless of input */
+const OPUS_ENCODER_SAMPLE_RATE = 48000;
+
 export class AudioEncoder extends WebCodecsEventTarget {
   private _state: CodecState = 'unconfigured';
   private _encodeQueueSize = 0;
@@ -74,6 +77,8 @@ export class AudioEncoder extends WebCodecsEventTarget {
   private _codecDescription: Uint8Array | null = null;
   private _ondequeue: EventHandler | null = null;
   private _flushPromise: Promise<void> | null = null;
+  /** Actual encoder sample rate (48kHz for Opus, config.sampleRate otherwise) */
+  private _encoderSampleRate = 0;
 
   constructor(init: AudioEncoderInit) {
     super();
@@ -173,6 +178,11 @@ export class AudioEncoder extends WebCodecsEventTarget {
     this._firstChunk = true;
     this._bitstreamFormat = config.format ?? 'adts';
     this._codecDescription = null;
+
+    // Opus always encodes at 48kHz regardless of input sample rate
+    const codecBase = getCodecBase(config.codec);
+    const isOpus = codecBase === 'opus';
+    this._encoderSampleRate = isOpus ? OPUS_ENCODER_SAMPLE_RATE : config.sampleRate;
 
     this._startEncoder();
   }
@@ -367,10 +377,11 @@ export class AudioEncoder extends WebCodecsEventTarget {
     if (!this._config) return;
 
     const samplesPerFrame = getAudioFrameSize(this._ffmpegCodec) || 1024;
-    // Use timestamp from backend (in samples) converted to microseconds
+    // Use timestamp from backend (in samples at encoder rate) converted to microseconds
+    // Use _encoderSampleRate (48kHz for Opus) not config.sampleRate
     // Clamp to non-negative (AAC encoder has priming delay causing negative initial timestamps)
-    const timestamp = Math.max(0, (frame.timestamp * 1_000_000) / this._config.sampleRate);
-    const duration = (samplesPerFrame * 1_000_000) / this._config.sampleRate;
+    const timestamp = Math.max(0, (frame.timestamp * 1_000_000) / this._encoderSampleRate);
+    const duration = (samplesPerFrame * 1_000_000) / this._encoderSampleRate;
 
     let payload = frame.data;
     const codecBase = getCodecBase(this._config.codec);
@@ -401,11 +412,13 @@ export class AudioEncoder extends WebCodecsEventTarget {
       data: new Uint8Array(payload),
     });
 
+    // decoderConfig uses _encoderSampleRate - the actual rate of the encoded stream
+    // (48kHz for Opus regardless of input rate)
     const metadata: AudioEncoderOutputMetadata | undefined = this._firstChunk
       ? {
           decoderConfig: {
             codec: this._config.codec,
-            sampleRate: this._config.sampleRate,
+            sampleRate: this._encoderSampleRate,
             numberOfChannels: this._config.numberOfChannels,
             description: this._codecDescription ?? undefined,
           },

@@ -5,6 +5,7 @@ This guide covers all configuration options for video and audio encoding in webc
 ## Table of Contents
 
 - [Bitrate Mode](#bitrate-mode)
+- [Non-standard Quality Overrides](#non-standard-quality-overrides)
 - [Alpha Channel Handling](#alpha-channel-handling)
 - [Latency Mode](#latency-mode)
 - [Hardware Acceleration](#hardware-acceleration)
@@ -92,6 +93,32 @@ encoder.configure({
 **Cons:**
 - Unpredictable file size
 - Not suitable for streaming
+
+---
+
+## Non-standard Quality Overrides
+
+`crf` and `preset` are **extensions** (not part of the WebCodecs spec). They are loaded globally from a JS file and passed to FFmpeg when supported.
+
+Edit `ffmpeg-quality.js` in the project root:
+
+```javascript
+export default {
+  // Global overrides:
+  // crf: 28,
+  // preset: 'veryfast',
+
+  // Per-codec overrides:
+  // perCodec: {
+  //   h264: { crf: 30, preset: 'veryfast' },
+  //   hevc: { crf: 28, preset: 'medium' },
+  // },
+};
+```
+
+**Notes:**
+- If the file is missing, no overrides are applied.
+- The file is loaded from `process.cwd()` or from `WEB_CODECS_FFMPEG_QUALITY`.
 
 ---
 

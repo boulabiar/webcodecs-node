@@ -112,11 +112,12 @@ describe('NodeAV VideoDecoder backend', () => {
     it('decodes h264 chunks produced by node-av encoder', async () => {
       const codec = 'avc1.42001E';
 
-      const { chunks, error: encodeError } = await encodeFrames(codec, width, height, numFrames);
+      const { chunks, description, error: encodeError } = await encodeFrames(codec, width, height, numFrames);
       if (encodeError) throw encodeError;
       expect(chunks.length).toBeGreaterThan(0);
 
-      const { frames, error: decodeError } = await decodeChunks(codec, chunks, width, height);
+      // Pass description (AVCC config) to decoder for proper H.264 decoding
+      const { frames, error: decodeError } = await decodeChunks(codec, chunks, width, height, 'I420', description);
       if (decodeError) throw decodeError;
 
       expect(frames.length).toBeGreaterThan(0);
@@ -126,10 +127,11 @@ describe('NodeAV VideoDecoder backend', () => {
     it('outputs RGBA format when requested', async () => {
       const codec = 'avc1.42001E';
 
-      const { chunks, error: encodeError } = await encodeFrames(codec, width, height, numFrames);
+      const { chunks, description, error: encodeError } = await encodeFrames(codec, width, height, numFrames);
       if (encodeError) throw encodeError;
 
-      const { frames, error: decodeError } = await decodeChunks(codec, chunks, width, height, 'RGBA');
+      // Pass description (AVCC config) to decoder for proper H.264 decoding
+      const { frames, error: decodeError } = await decodeChunks(codec, chunks, width, height, 'RGBA', description);
       if (decodeError) throw decodeError;
 
       expect(frames.length).toBeGreaterThan(0);
@@ -234,10 +236,11 @@ describe('NodeAV VideoDecoder backend', () => {
     it('preserves frame dimensions through encode/decode cycle', async () => {
       const codec = 'avc1.42001E';
 
-      const { chunks, error: encodeError } = await encodeFrames(codec, width, height, numFrames);
+      const { chunks, description, error: encodeError } = await encodeFrames(codec, width, height, numFrames);
       if (encodeError) throw encodeError;
 
-      const { frames, error: decodeError } = await decodeChunks(codec, chunks, width, height);
+      // Pass description (AVCC config) to decoder for proper H.264 decoding
+      const { frames, error: decodeError } = await decodeChunks(codec, chunks, width, height, 'I420', description);
       if (decodeError) throw decodeError;
 
       expect(frames.length).toBeGreaterThan(0);

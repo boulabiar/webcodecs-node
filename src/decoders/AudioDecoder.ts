@@ -297,6 +297,13 @@ export class AudioDecoder extends WebCodecsEventTarget {
       this._handleDecodedFrame(frame);
     });
 
+    this._decoder.on('chunkAccepted', () => {
+      // Chunk has been accepted for decoding - decrement queue and fire dequeue event
+      // This matches WebCodecs semantics: decodeQueueSize tracks chunks, not frames
+      this._decodeQueueSize = Math.max(0, this._decodeQueueSize - 1);
+      this._fireDequeueEvent();
+    });
+
     this._decoder.on('error', (err: Error) => {
       this._safeErrorCallback(err);
     });
@@ -351,8 +358,8 @@ export class AudioDecoder extends WebCodecsEventTarget {
     const audioData = new AudioData(init);
 
     this._frameIndex += frame.numberOfFrames;
-    this._decodeQueueSize = Math.max(0, this._decodeQueueSize - 1);
-    this._fireDequeueEvent();
+    // Note: Queue decrement is handled by 'chunkAccepted' event, not here
+    // This ensures decodeQueueSize tracks chunks (not frames) per WebCodecs spec
 
     this._safeOutputCallback(audioData);
   }

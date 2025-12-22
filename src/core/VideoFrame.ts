@@ -255,6 +255,12 @@ export class VideoFrame {
       );
     } else if (isCanvasImageSource(dataOrImage)) {
       const frameInit = init as VideoFrameInit;
+
+      // WebCodecs spec §7.1 step 3: CanvasImageSource requires a finite timestamp
+      if (typeof frameInit.timestamp !== 'number' || !Number.isFinite(frameInit.timestamp)) {
+        throw new TypeError('timestamp is required and must be a finite number for CanvasImageSource');
+      }
+
       const result = this._extractFromCanvasImageSource(dataOrImage, frameInit);
 
       this._data = result.data;

@@ -1,0 +1,46 @@
+# Source files (use dist instead)
+src/
+
+# Test files
+src/__tests__/
+dist/__tests__/
+**/*.test.ts
+**/*.test.js
+**/*.test.d.ts
+**/*.test.js.map
+**/*.test.d.ts.map
+jest.config.*
+
+# Demo source files
+src/demos/
+dist/demos/
+
+# Debug files
+dist/debug*.js
+dist/debug*.d.ts
+dist/debug*.js.map
+dist/debug*.d.ts.map
+
+# Development files
+tsconfig.json
+.git/
+.gitignore
+.vscode/
+.idea/
+.claude/
+
+# Temporary and generated files
+/tmp/
+*.log
+*.txt
+*.tgz
+
+# CI/CD
+.github/
+.travis.yml
+.circleci/
+
+# Package manager files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml

@@ -685,6 +685,12 @@ npm run demo:fourcorners
 
 # 1080p transcoding demo
 npm run demo:1080p
+
+# DVD bouncing logo animation
+npm run demo:dvd
+
+# Audio visualizer with waveform and spectrum
+npm run demo:visualizer
 ```
 
 ## Benchmarking

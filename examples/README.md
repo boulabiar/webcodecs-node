@@ -118,6 +118,10 @@ The `demos/` folder contains more complete demos that can be run via npm scripts
 npm run demo:webcodecs      # Basic WebCodecs demo
 npm run demo:image          # Image decoding demo
 npm run demo:streaming      # Streaming comparison
-npm run demo:conversion     # File conversion with Mediabunny
 npm run demo:hwaccel        # Hardware acceleration detection
+npm run demo:fourcorners    # Video quadrant compositor
+npm run demo:containers     # Container demuxing/muxing
+npm run demo:1080p          # 1080p transcoding benchmark
+npm run demo:dvd            # Bouncing DVD logo animation
+npm run demo:visualizer     # Audio visualizer with waveform
 ```

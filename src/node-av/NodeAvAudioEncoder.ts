@@ -7,7 +7,7 @@
 
 import { EventEmitter } from 'events';
 
-import { Encoder } from 'node-av/api';
+import { Encoder, FilterAPI } from 'node-av/api';
 import { Frame, Rational } from 'node-av/lib';
 import {
   AV_SAMPLE_FMT_FLTP,
@@ -54,6 +54,11 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
   private timeBase: Rational = new Rational(1, OPUS_SAMPLE_RATE);
   private codecDescription: Buffer | null = null;
   private firstFrame = true;
+  // Resampling support for Opus with non-48kHz input
+  private resampler: FilterAPI | null = null;
+  private needsResampling = false;
+  private inputSampleRate = 0;
+  private encoderSampleRate = 0;
 
   get isHealthy(): boolean {
     return !this.shuttingDown;
@@ -61,9 +66,42 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
 
   startEncoder(config: AudioEncoderBackendConfig): void {
     this.config = { ...config };
-    this.timeBase = new Rational(1, config.sampleRate);
+
+    const codecName = this.getEncoderName(config.codec);
+    const isOpus = codecName === 'libopus';
+
+    // Store sample rates
+    this.inputSampleRate = config.sampleRate;
+    this.encoderSampleRate = isOpus ? OPUS_SAMPLE_RATE : config.sampleRate;
+
+    // For Opus with non-48kHz input, we need to resample
+    this.needsResampling = isOpus && config.sampleRate !== OPUS_SAMPLE_RATE;
+    if (this.needsResampling) {
+      logger.info(`Opus requires 48kHz, will resample from ${config.sampleRate}Hz`);
+    }
+
+    // Set timeBase to match the ENCODER's sample rate (48kHz for Opus)
+    // This ensures correct timestamp calculations for encoded output
+    this.timeBase = new Rational(1, this.encoderSampleRate);
+
     // Input is always float32 interleaved from AudioData conversion
     this.sampleFormat = AV_SAMPLE_FMT_FLT;
+  }
+
+  private getEncoderName(codec: string): string {
+    const codecLower = codec.toLowerCase();
+    if (codecLower.startsWith('mp4a') || codecLower === 'aac') {
+      return 'aac';
+    } else if (codecLower === 'opus') {
+      return 'libopus';
+    } else if (codecLower === 'vorbis') {
+      return 'libvorbis';
+    } else if (codecLower === 'flac') {
+      return 'flac';
+    } else if (codecLower === 'mp3') {
+      return 'libmp3lame';
+    }
+    return 'aac';
   }
 
   write(data: Buffer | Uint8Array): boolean {
@@ -159,6 +197,15 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
     logger.info(`Using encoder: ${encoderCodec}, format: ${options.sampleFormat}`);
 
     this.encoder = await Encoder.create(encoderCodec as FFEncoderCodec, options);
+
+    // Create resampler if needed (e.g., Opus with non-48kHz input)
+    if (this.needsResampling && !this.resampler) {
+      // Use aresample filter to convert sample rate
+      // The filter handles high-quality resampling via libswresample
+      const filterDesc = `aresample=${this.encoderSampleRate}:first_pts=0`;
+      this.resampler = FilterAPI.create(filterDesc, {} as any);
+      logger.info(`Created resampler: ${this.inputSampleRate}Hz -> ${this.encoderSampleRate}Hz`);
+    }
 
     // Extract codec description (extradata) for codecs that require it
     this.extractCodecDescription();
@@ -408,25 +455,53 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
       frameFormat = AV_SAMPLE_FMT_FLTP;
     }
 
-    const frame = Frame.fromAudioBuffer(audioData, {
-      sampleRate: this.config.sampleRate,
+    // Create input frame at INPUT sample rate
+    const inputFrame = Frame.fromAudioBuffer(audioData, {
+      sampleRate: this.inputSampleRate,
       channelLayout: this.getChannelLayout(this.config.numberOfChannels),
       format: frameFormat,
       nbSamples: samplesPerChannel,
-      timeBase: this.timeBase,
+      timeBase: new Rational(1, this.inputSampleRate),
     });
-    frame.pts = BigInt(this.frameIndex);
 
-    await this.encoder.encode(frame);
-    frame.unref();
+    // If resampling is needed, process through resampler
+    if (this.needsResampling && this.resampler) {
+      // Set input PTS for correct resampler timing
+      // Use input sample count (not output) for input frame timing
+      inputFrame.pts = BigInt(this.frameIndex);
+
+      await this.resampler.process(inputFrame);
+      inputFrame.unref();
+
+      // Drain all resampled frames and encode them
+      // Note: receive() returns null when no output is ready yet, undefined/false when done
+      let resampledFrame = await this.resampler.receive();
+      while (resampledFrame) {
+        const outputSamples = resampledFrame.nbSamples ?? 0;
+        // PTS comes from resampler, but we track output sample count for our index
+        resampledFrame.pts = BigInt(this.frameIndex);
+
+        await this.encoder.encode(resampledFrame);
+        resampledFrame.unref();
+
+        this.frameIndex += outputSamples;
+
+        // Get next frame
+        resampledFrame = await this.resampler.receive();
+      }
+    } else {
+      // No resampling - encode directly
+      inputFrame.pts = BigInt(this.frameIndex);
+      await this.encoder.encode(inputFrame);
+      inputFrame.unref();
+      this.frameIndex += samplesPerChannel;
+    }
 
     // Try to extract codec description after first encode (some codecs like FLAC
     // don't populate extradata until after encoding starts)
     this.extractCodecDescription();
 
     await this.drainPackets();
-
-    this.frameIndex += samplesPerChannel;
   }
 
   private convertToPlanar(data: Buffer, samplesPerChannel: number, numChannels: number): Uint8Array {
@@ -521,6 +596,30 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
       await this.processingPromise;
     }
 
+    // Flush resampler if present - encode any remaining buffered samples
+    if (this.resampler && this.encoder) {
+      try {
+        // Signal EOF to resampler to flush its internal buffers
+        await this.resampler.process(null as any);
+
+        // Drain remaining frames
+        let resampledFrame = await this.resampler.receive();
+        while (resampledFrame) {
+          const outputSamples = resampledFrame.nbSamples ?? 0;
+          resampledFrame.pts = BigInt(this.frameIndex);
+          await this.encoder.encode(resampledFrame);
+          resampledFrame.unref();
+          this.frameIndex += outputSamples;
+
+          resampledFrame = await this.resampler.receive();
+        }
+        await this.drainPackets();
+      } catch (err) {
+        // Resampler flush errors are non-fatal
+        logger.debug(`Resampler flush error: ${err}`);
+      }
+    }
+
     if (this.encoder) {
       try {
         await this.encoder.flush();
@@ -560,6 +659,8 @@ export class NodeAvAudioEncoder extends EventEmitter implements AudioEncoderBack
   }
 
   private cleanup(): void {
+    this.resampler?.close();
+    this.resampler = null;
     this.encoder?.close();
     this.encoder = null;
     this.queue = [];

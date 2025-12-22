@@ -93,8 +93,6 @@ function drawWaveform(
   ctx.beginPath();
   ctx.strokeStyle = COLORS.waveform;
   ctx.lineWidth = 2;
-  ctx.shadowColor = COLORS.waveform;
-  ctx.shadowBlur = 10;
 
   for (let i = 0; i < width; i++) {
     const sampleIndex = Math.min(i * step, samples.length / AUDIO_CHANNELS - 1);
@@ -109,7 +107,6 @@ function drawWaveform(
   }
 
   ctx.stroke();
-  ctx.shadowBlur = 0;
 }
 
 function drawSpectrumBars(
@@ -138,8 +135,6 @@ function drawSpectrumBars(
     gradient.addColorStop(1, '#000033');
 
     ctx.fillStyle = gradient;
-    ctx.shadowColor = COLORS.bars[i % COLORS.bars.length];
-    ctx.shadowBlur = 15;
 
     // Rounded rectangle
     const radius = barWidth / 4;
@@ -153,8 +148,6 @@ function drawSpectrumBars(
     ctx.quadraticCurveTo(bx, by, bx + radius, by);
     ctx.fill();
   }
-
-  ctx.shadowBlur = 0;
 }
 
 function drawGrid(ctx: any, width: number, height: number): void {

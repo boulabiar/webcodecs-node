@@ -68,11 +68,6 @@ function drawDvdLogo(
   ctx.font = 'bold 14px Arial, sans-serif';
   ctx.fillText('VIDEO', LOGO_WIDTH / 2, LOGO_HEIGHT / 2 + 18);
 
-  // Add a subtle glow effect
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 10;
-  ctx.fillText('VIDEO', LOGO_WIDTH / 2, LOGO_HEIGHT / 2 + 18);
-
   ctx.restore();
 }
 

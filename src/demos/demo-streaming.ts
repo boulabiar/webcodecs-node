@@ -38,6 +38,7 @@ async function demoVideoStreaming(): Promise<void> {
 
   // Collect encoded chunks to pass to decoder
   const encodedChunks: EncodedVideoChunk[] = [];
+  let decoderDescription: Uint8Array | undefined;
 
   // Create encoder
   const encoder = new VideoEncoder({
@@ -46,6 +47,10 @@ async function demoVideoStreaming(): Promise<void> {
       encodedCount++;
       console.log(`  [${formatTime(elapsed)}] ENCODED frame ${encodedCount}: ${chunk.byteLength} bytes (${chunk.type})`);
       encodedChunks.push(chunk);
+      // Capture decoder description from first chunk's metadata
+      if (metadata?.decoderConfig?.description && !decoderDescription) {
+        decoderDescription = metadata.decoderConfig.description;
+      }
     },
     error: (err) => console.error('Encoder error:', err),
   });
@@ -119,6 +124,7 @@ async function demoVideoStreaming(): Promise<void> {
     codec: 'avc1.42001E',
     codedWidth: WIDTH,
     codedHeight: HEIGHT,
+    description: decoderDescription,
   });
 
   // Feed chunks to decoder one by one with delays

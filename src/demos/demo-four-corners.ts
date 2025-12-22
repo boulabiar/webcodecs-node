@@ -220,6 +220,11 @@ async function main() {
   });
 
   for (let i = 0; i < Math.min(decodedFrames.length, FRAMES_TO_RENDER); i++) {
+    // Backpressure: wait if encoder queue is getting full
+    while (encoder.encodeQueueSize >= 50) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
     const src = decodedFrames[i];
     const composite = compositeFourUp(src, outWidth, outHeight);
 

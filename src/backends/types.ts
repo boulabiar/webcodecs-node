@@ -44,6 +44,8 @@ export interface VideoEncoderBackendConfig {
   latencyMode?: 'quality' | 'realtime';
   alpha?: 'discard' | 'keep';
   hardwareAcceleration?: 'no-preference' | 'prefer-hardware' | 'prefer-software';
+  /** Output format: 'annexb' for raw Annex B, 'mp4' for length-prefixed (AVCC/HVCC) */
+  format?: 'annexb' | 'mp4';
 }
 
 /**

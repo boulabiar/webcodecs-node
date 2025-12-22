@@ -39,7 +39,13 @@ import {
   buildHvccDecoderConfig,
   convertAnnexBToHvcc,
 } from '../utils/hevc.js';
+import {
+  extractAvcParameterSetsFromAnnexB,
+  buildAvcDecoderConfig,
+  convertAnnexBToAvcc,
+} from '../utils/avc.js';
 import { acquireHardwareContext, releaseHardwareContext } from '../utils/hardware-pool.js';
+import { getFfmpegQualityOverrides } from '../config/ffmpeg-quality.js';
 
 const logger = createLogger('NodeAvVideoEncoder');
 
@@ -120,7 +126,9 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
   private timeBase: Rational = new Rational(1, DEFAULT_FRAMERATE);
   private codecDescription: Buffer | null = null;
   private isHevcCodec = false;
+  private isAvcCodec = false;
   private needsFormatConversion = false;
+  private outputFormat: 'annexb' | 'mp4' = 'mp4'; // Default to MP4/AVCC format
 
   get isHealthy(): boolean {
     return !this.shuttingDown;
@@ -131,6 +139,7 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
     const framerate = config.framerate ?? DEFAULT_FRAMERATE;
     this.timeBase = new Rational(1, framerate);
     this.inputPixelFormat = mapPixelFormat(config.inputPixelFormat || 'yuv420p');
+    this.outputFormat = config.format ?? 'mp4'; // Default to MP4/AVCC format
   }
 
   write(data: Buffer | Uint8Array): boolean {
@@ -212,6 +221,7 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
 
     const codecName = parseCodecString(this.config.codec) ?? 'h264';
     this.isHevcCodec = codecName === 'hevc';
+    this.isAvcCodec = codecName === 'h264';
     const framerate = this.config.framerate ?? DEFAULT_FRAMERATE;
     const gopSize = Math.max(1, framerate);
 
@@ -338,6 +348,7 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
     const isVpCodec = codecName === 'vp8' || codecName === 'vp9';
     const isAv1 = codecName === 'av1';
     const hwType = this.hardware?.deviceTypeName;
+    const qualityOverrides = getFfmpegQualityOverrides(codecName);
 
     // Codec-specific options
     if (isVpCodec) {
@@ -349,11 +360,18 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
     }
 
     // Quality mode
-    if (this.config?.bitrateMode === 'quantizer') {
+    if (qualityOverrides.crf !== undefined) {
+      options.crf = String(qualityOverrides.crf);
+    } else if (this.config?.bitrateMode === 'quantizer') {
       const crf = CRF_DEFAULTS[codecName as keyof typeof CRF_DEFAULTS];
       if (crf) {
         options.crf = String(crf);
       }
+    }
+
+    // Explicit preset overrides codec defaults when supported
+    if (qualityOverrides.preset) {
+      options.preset = qualityOverrides.preset;
     }
 
     // Bitrate (required for VP/AV1)
@@ -519,9 +537,26 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
         const timestamp = packet.pts !== undefined ? Number(packet.pts) : this.frameIndex;
         const keyFrame = (packet.flags & AV_PKT_FLAG_KEY) === AV_PKT_FLAG_KEY || packet.isKeyframe;
 
-        // For HEVC, extract VPS/SPS/PPS from first keyframe and build HVCC description
+        // For H.264/HEVC, extract parameter sets from first keyframe and build description
         // Also convert Annex B (start codes) to length-prefixed format for MP4 compatibility
         let frameData: Buffer = Buffer.from(packet.data);
+
+        // H.264: Extract SPS/PPS and build AVCC description
+        if (this.isAvcCodec && keyFrame && !this.codecDescription) {
+          try {
+            const { sps, pps } = extractAvcParameterSetsFromAnnexB(packet.data);
+            if (sps.length > 0 && pps.length > 0) {
+              this.codecDescription = Buffer.from(buildAvcDecoderConfig(sps, pps, 4));
+              logger.debug(`Built AVCC description: ${this.codecDescription.length} bytes`);
+            } else {
+              logger.warn('H.264 keyframe missing parameter sets (SPS/PPS)');
+            }
+          } catch (err) {
+            logger.warn(`Failed to extract H.264 parameter sets: ${(err as Error).message}`);
+          }
+        }
+
+        // HEVC: Extract VPS/SPS/PPS and build HVCC description
         if (this.isHevcCodec && keyFrame && !this.codecDescription) {
           try {
             const { vps, sps, pps } = extractHevcParameterSetsFromAnnexB(packet.data);
@@ -536,10 +571,18 @@ export class NodeAvVideoEncoder extends EventEmitter implements VideoEncoderBack
           }
         }
 
-        // Convert HEVC Annex B to length-prefixed (HVCC) format
-        if (this.isHevcCodec) {
-          frameData = convertAnnexBToHvcc(packet.data, 4);
-          logger.debug(`Converted HEVC frame to length-prefixed: ${packet.data.length} -> ${frameData.length} bytes`);
+        // Convert H.264/HEVC Annex B to length-prefixed format only when format is 'mp4'
+        // When format is 'annexb', preserve the raw Annex B output with start codes
+        if (this.outputFormat !== 'annexb') {
+          if (this.isAvcCodec) {
+            frameData = convertAnnexBToAvcc(packet.data, 4);
+            logger.debug(`Converted H.264 frame to length-prefixed: ${packet.data.length} -> ${frameData.length} bytes`);
+          }
+
+          if (this.isHevcCodec) {
+            frameData = convertAnnexBToHvcc(packet.data, 4);
+            logger.debug(`Converted HEVC frame to length-prefixed: ${packet.data.length} -> ${frameData.length} bytes`);
+          }
         }
 
         const frame: EncodedFrame = {

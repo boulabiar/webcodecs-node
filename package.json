@@ -38,7 +38,10 @@
     "demo:samples": "node dist/demos/demo-samples.js",
     "demo:fourcorners": "node dist/demos/demo-four-corners.js",
     "demo:containers": "node dist/demos/demo-containers.js",
-    "demo:1080p": "node dist/demos/demo-1080p-transcode.js"
+    "demo:1080p": "node dist/demos/demo-1080p-transcode.js",
+    "bench": "node scripts/encoding-benchmark.mjs",
+    "bench:quick": "node scripts/encoding-benchmark.mjs --frames 30 --resolution 360p",
+    "bench:full": "node scripts/encoding-benchmark.mjs --frames 300 --resolution 1080p"
   },
   "keywords": [
     "webcodecs",

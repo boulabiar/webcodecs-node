@@ -8,6 +8,7 @@ import { DOMException } from '../types/index.js';
 import { createLogger } from '../utils/index.js';
 import type { VideoColorSpaceInit } from '../formats/index.js';
 import { NodeAvImageDecoder } from '../node-av/NodeAvImageDecoder.js';
+import { WebPImageDecoder } from '../node-av/WebPImageDecoder.js';
 
 const logger = createLogger('ImageDecoder');
 
@@ -565,12 +566,51 @@ export class ImageDecoder {
     }
   }
 
+  private async _decodeWithWebP(): Promise<void> {
+    if (!this._data) return;
+
+    logger.debug('Using WebP decoder for WebP image');
+    const webpDecoder = new WebPImageDecoder({
+      data: this._data,
+      desiredWidth: this._desiredWidth,
+      desiredHeight: this._desiredHeight,
+      colorSpace: this._preferredColorSpace,
+    });
+
+    try {
+      const decodedFrames = await webpDecoder.decode();
+
+      for (const frame of decodedFrames) {
+        // Apply premultiplication if needed
+        const processed = this._processFrameData(frame.data);
+
+        this._frames.push({
+          data: processed,
+          width: frame.width,
+          height: frame.height,
+          timestamp: frame.timestamp,
+          duration: frame.duration,
+          complete: frame.complete,
+          colorSpace: frame.colorSpace,
+        });
+      }
+    } finally {
+      webpDecoder.close();
+    }
+  }
+
   private async _decodeAllFramesDirect(): Promise<void> {
     if (!this._data) return;
 
-    // Decode using node-av
-    // Note: Animated WebP has limited support (FFmpeg webp demuxer skips ANIM/ANMF chunks)
-    await this._decodeWithNodeAv();
+    const type = this._type.toLowerCase();
+
+    // Use dedicated WebP decoder for full animated WebP support
+    if (type === 'image/webp') {
+      await this._decodeWithWebP();
+    } else {
+      // Decode using node-av for other formats
+      await this._decodeWithNodeAv();
+    }
 
     if (this._frames.length === 0) {
       throw new Error('No frames decoded');

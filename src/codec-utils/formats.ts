@@ -18,6 +18,11 @@ export function pixelFormatToFFmpeg(format: string): string {
     'RGBX': 'rgb0',
     'BGRA': 'bgra',
     'BGRX': 'bgr0',
+    // 10-bit formats
+    'I420P10': 'yuv420p10le',
+    'I422P10': 'yuv422p10le',
+    'I444P10': 'yuv444p10le',
+    'P010': 'p010le',
   };
   return formatMap[format] || format.toLowerCase();
 }
@@ -36,6 +41,15 @@ export function ffmpegToPixelFormat(format: string): string {
     'rgb0': 'RGBX',
     'bgra': 'BGRA',
     'bgr0': 'BGRX',
+    // 10-bit formats
+    'yuv420p10le': 'I420P10',
+    'yuv420p10be': 'I420P10',
+    'yuv422p10le': 'I422P10',
+    'yuv422p10be': 'I422P10',
+    'yuv444p10le': 'I444P10',
+    'yuv444p10be': 'I444P10',
+    'p010le': 'P010',
+    'p010be': 'P010',
   };
   return formatMap[format] || format.toUpperCase();
 }
@@ -109,6 +123,23 @@ export function calculateFrameSize(format: string, width: number, height: number
     case 'NV12':
       // Y: width * height, UV interleaved: width * chromaH
       return width * height + width * chromaH;
+    // 10-bit formats: 2 bytes per sample
+    case 'I420P10':
+    case 'YUV420P10LE':
+    case 'YUV420P10BE':
+      return (width * height + 2 * chromaW * chromaH) * 2;
+    case 'I422P10':
+    case 'YUV422P10LE':
+    case 'YUV422P10BE':
+      return (width * height + 2 * chromaW * height) * 2;
+    case 'I444P10':
+    case 'YUV444P10LE':
+    case 'YUV444P10BE':
+      return width * height * 3 * 2;
+    case 'P010':
+    case 'P010LE':
+    case 'P010BE':
+      return (width * height + width * chromaH) * 2;
     case 'RGBA':
     case 'RGBX':
     case 'BGRA':

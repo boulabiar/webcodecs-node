@@ -19,6 +19,13 @@ export {
   type AudioEncoderSupport,
 } from './AudioEncoder.js';
 
+export {
+  ImageEncoder,
+  type ImageEncoderOptions,
+  type ImageEncoderResult,
+  type ImageEncoderOutputType,
+} from './ImageEncoder.js';
+
 export type { CodecState } from './VideoEncoder.js';
 
 // Codec-specific configurations

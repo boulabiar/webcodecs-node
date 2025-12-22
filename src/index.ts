@@ -41,7 +41,31 @@ export type {
 
 // Formats
 export { VideoColorSpace } from './formats/index.js';
-export type { VideoColorSpaceInit } from './formats/index.js';
+export type {
+  VideoColorSpaceInit,
+  HdrMetadata,
+  SmpteSt2086Metadata,
+  ContentLightLevelInfo,
+} from './formats/index.js';
+export {
+  HDR10_DISPLAY_PRIMARIES,
+  createHdr10MasteringMetadata,
+  createContentLightLevel,
+} from './formats/index.js';
+
+// Pixel format utilities (10-bit support)
+export {
+  is10BitFormat,
+  getBitDepth,
+  get8BitEquivalent,
+  get10BitEquivalent,
+  getFrameAllocationSize,
+  getPlaneCount,
+  getPlaneInfo,
+  isRgbFormat,
+  isYuvFormat,
+  hasAlphaChannel,
+} from './formats/index.js';
 
 // Encoders
 export { VideoEncoder } from './encoders/index.js';
@@ -60,6 +84,13 @@ export type {
   AudioEncoderSupport,
   AudioEncoderOutputMetadata,
 } from './encoders/AudioEncoder.js';
+
+export { ImageEncoder } from './encoders/index.js';
+export type {
+  ImageEncoderOptions,
+  ImageEncoderResult,
+  ImageEncoderOutputType,
+} from './encoders/ImageEncoder.js';
 
 // Decoders
 export { VideoDecoder } from './decoders/index.js';

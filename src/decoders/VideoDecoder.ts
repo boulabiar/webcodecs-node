@@ -25,7 +25,9 @@ import { getCodecBase } from '../utils/codec-cache.js';
 import { encodingError, wrapAsWebCodecsError } from '../utils/errors.js';
 
 const SUPPORTED_OUTPUT_FORMATS: VideoPixelFormat[] = [
-  'I420', 'I420A', 'I422', 'I444', 'NV12', 'RGBA', 'RGBX', 'BGRA', 'BGRX'
+  'I420', 'I420A', 'I422', 'I444', 'NV12', 'RGBA', 'RGBX', 'BGRA', 'BGRX',
+  // 10-bit formats
+  'I420P10', 'I422P10', 'I444P10', 'P010'
 ];
 
 export type CodecState = 'unconfigured' | 'configured' | 'closed';

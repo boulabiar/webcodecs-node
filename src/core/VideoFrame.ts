@@ -598,6 +598,40 @@ export class VideoFrame {
           { offset: ySize, stride: width },
         ];
       }
+      // 10-bit formats: 2 bytes per sample
+      case 'I420P10': {
+        const ySize = width * height * 2;
+        const uvSize = chromaW * chromaH * 2;
+        return [
+          { offset: 0, stride: width * 2 },
+          { offset: ySize, stride: chromaW * 2 },
+          { offset: ySize + uvSize, stride: chromaW * 2 },
+        ];
+      }
+      case 'I422P10': {
+        const ySize = width * height * 2;
+        const uvSize = chromaW * height * 2;
+        return [
+          { offset: 0, stride: width * 2 },
+          { offset: ySize, stride: chromaW * 2 },
+          { offset: ySize + uvSize, stride: chromaW * 2 },
+        ];
+      }
+      case 'I444P10': {
+        const planeSize = width * height * 2;
+        return [
+          { offset: 0, stride: width * 2 },
+          { offset: planeSize, stride: width * 2 },
+          { offset: 2 * planeSize, stride: width * 2 },
+        ];
+      }
+      case 'P010': {
+        const ySize = width * height * 2;
+        return [
+          { offset: 0, stride: width * 2 },
+          { offset: ySize, stride: width * 2 },
+        ];
+      }
       case 'RGBA':
       case 'RGBX':
       case 'BGRA':

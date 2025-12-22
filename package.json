@@ -73,6 +73,7 @@
   "homepage": "",
   "dependencies": {
     "node-av": "^5.0.2",
+    "node-webpmux": "^3.2.1",
     "skia-canvas": "^2.0.2"
   },
   "devDependencies": {

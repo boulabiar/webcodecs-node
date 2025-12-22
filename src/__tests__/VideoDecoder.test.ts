@@ -267,9 +267,16 @@ describe('VideoDecoder encode-decode roundtrip', () => {
 
     // Step 1: Encode frames
     const encodedChunks: EncodedVideoChunk[] = [];
+    let description: Uint8Array | undefined;
 
     const encoder = new VideoEncoder({
-      output: (chunk) => encodedChunks.push(chunk),
+      output: (chunk, metadata) => {
+        encodedChunks.push(chunk);
+        // Capture AVCC description for decoder
+        if (metadata?.decoderConfig?.description) {
+          description = metadata.decoderConfig.description;
+        }
+      },
       error: (err) => { throw err; },
     });
 
@@ -327,6 +334,7 @@ describe('VideoDecoder encode-decode roundtrip', () => {
       codedWidth: width,
       codedHeight: height,
       outputFormat: 'RGBA',
+      description, // Pass AVCC config for H.264 decoding
     });
 
     for (const chunk of encodedChunks) {
@@ -432,9 +440,16 @@ describe('VideoDecoder encode-decode roundtrip', () => {
 
     // Encode frames first
     const encodedChunks: EncodedVideoChunk[] = [];
+    let description: Uint8Array | undefined;
 
     const encoder = new VideoEncoder({
-      output: (chunk) => encodedChunks.push(chunk),
+      output: (chunk, metadata) => {
+        encodedChunks.push(chunk);
+        // Capture AVCC description for decoder
+        if (metadata?.decoderConfig?.description) {
+          description = metadata.decoderConfig.description;
+        }
+      },
       error: (err) => { throw err; },
     });
 
@@ -476,6 +491,7 @@ describe('VideoDecoder encode-decode roundtrip', () => {
       codec: 'avc1.42001E',
       codedWidth: width,
       codedHeight: height,
+      description, // Pass AVCC config for H.264 decoding
     });
 
     for (const chunk of encodedChunks) {

@@ -373,6 +373,7 @@ export class VideoEncoder extends WebCodecsEventTarget {
       latencyMode: this._config.latencyMode,
       alpha: this._config.alpha,
       hardwareAcceleration: this._hardwarePreference,
+      format: this._config.format,
     });
 
     this._encoder.on('encodedFrame', (frame: { data: Buffer; timestamp: number; keyFrame: boolean }) => {

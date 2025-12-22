@@ -32,6 +32,15 @@ export interface VideoEncoderConfig {
   bitrateMode?: 'constant' | 'variable' | 'quantizer';
   latencyMode?: 'quality' | 'realtime';
   format?: 'annexb' | 'mp4';
+  /**
+   * Maximum number of frames that can be queued before encode() throws.
+   * If not specified, automatically calculated based on resolution:
+   * - 720p and below: 50 frames (~185MB for RGBA)
+   * - 1080p: 30 frames (~250MB for RGBA)
+   * - 4K: 10 frames (~330MB for RGBA)
+   * - 8K: 4 frames (~530MB for RGBA)
+   */
+  maxQueueSize?: number;
 }
 
 export interface VideoEncoderInit {
@@ -58,11 +67,28 @@ export interface VideoEncoderEncodeOptions {
 }
 
 const DEFAULT_FLUSH_TIMEOUT = 30000;
-const MAX_QUEUE_SIZE = 100; // Prevent unbounded memory growth
+const DEFAULT_MAX_QUEUE_SIZE = 100; // Fallback if resolution unknown
+
+/**
+ * Calculate optimal queue size based on resolution to limit memory usage.
+ * Target: ~250-500MB max memory for queued frames (RGBA format).
+ */
+function calculateMaxQueueSize(width: number, height: number): number {
+  const pixels = width * height;
+  const rgbaFrameBytes = pixels * 4;
+
+  // Target max memory: ~300MB for queue
+  const targetMemory = 300 * 1024 * 1024;
+  const calculated = Math.floor(targetMemory / rgbaFrameBytes);
+
+  // Clamp between 4 (minimum for smooth operation) and 100 (legacy max)
+  return Math.max(4, Math.min(100, calculated));
+}
 
 export class VideoEncoder extends WebCodecsEventTarget {
   private _state: CodecState = 'unconfigured';
   private _encodeQueueSize = 0;
+  private _maxQueueSize = DEFAULT_MAX_QUEUE_SIZE;
   private _config: VideoEncoderConfig | null = null;
   private _outputCallback: (chunk: EncodedVideoChunk, metadata?: VideoEncoderOutputMetadata) => void;
   private _errorCallback: (error: Error) => void;
@@ -196,6 +222,7 @@ export class VideoEncoder extends WebCodecsEventTarget {
     this._pendingFrames = [];
     this._inputFormat = null;
     this._hardwarePreference = config.hardwareAcceleration ?? 'no-preference';
+    this._maxQueueSize = config.maxQueueSize ?? calculateMaxQueueSize(config.width, config.height);
   }
 
   encode(frame: VideoFrame, options?: VideoEncoderEncodeOptions): void {
@@ -239,9 +266,9 @@ export class VideoEncoder extends WebCodecsEventTarget {
     }
 
     // Check queue saturation to prevent unbounded memory growth
-    if (this._encodeQueueSize >= MAX_QUEUE_SIZE) {
+    if (this._encodeQueueSize >= this._maxQueueSize) {
       this._safeErrorCallback(new DOMException(
-        `Encoder queue saturated (${MAX_QUEUE_SIZE} frames pending). Wait for dequeue events before encoding more frames.`,
+        `Encoder queue saturated (${this._maxQueueSize} frames pending). Wait for dequeue events before encoding more frames.`,
         'QuotaExceededError'
       ));
       return;

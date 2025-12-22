@@ -43,6 +43,16 @@ export interface VideoDecoderConfig {
   hardwareAcceleration?: 'no-preference' | 'prefer-hardware' | 'prefer-software';
   optimizeForLatency?: boolean;
   outputFormat?: VideoPixelFormat;
+  /**
+   * Maximum number of chunks that can be queued before decode() throws.
+   * If not specified and dimensions are provided, automatically calculated based on resolution:
+   * - 720p and below: 50 frames (~185MB for RGBA)
+   * - 1080p: 30 frames (~250MB for RGBA)
+   * - 4K: 10 frames (~330MB for RGBA)
+   * - 8K: 4 frames (~530MB for RGBA)
+   * If dimensions are not provided, defaults to 100.
+   */
+  maxQueueSize?: number;
 }
 
 export interface VideoDecoderInit {
@@ -56,11 +66,28 @@ export interface VideoDecoderSupport {
 }
 
 const DEFAULT_FLUSH_TIMEOUT = 30000;
-const MAX_QUEUE_SIZE = 100; // Prevent unbounded memory growth
+const DEFAULT_MAX_QUEUE_SIZE = 100; // Fallback if resolution unknown
+
+/**
+ * Calculate optimal queue size based on resolution to limit memory usage.
+ * Target: ~250-500MB max memory for queued frames (RGBA format).
+ */
+function calculateMaxQueueSize(width: number, height: number): number {
+  const pixels = width * height;
+  const rgbaFrameBytes = pixels * 4;
+
+  // Target max memory: ~300MB for queue
+  const targetMemory = 300 * 1024 * 1024;
+  const calculated = Math.floor(targetMemory / rgbaFrameBytes);
+
+  // Clamp between 4 (minimum for smooth operation) and 100 (legacy max)
+  return Math.max(4, Math.min(100, calculated));
+}
 
 export class VideoDecoder extends WebCodecsEventTarget {
   private _state: CodecState = 'unconfigured';
   private _decodeQueueSize = 0;
+  private _maxQueueSize = DEFAULT_MAX_QUEUE_SIZE;
   private _config: VideoDecoderConfig | null = null;
   private _outputCallback: (frame: VideoFrame) => void;
   private _errorCallback: (error: Error) => void;
@@ -175,6 +202,15 @@ export class VideoDecoder extends WebCodecsEventTarget {
     this._hevcConfig = this._parseHevcDescription(config);
     this._hardwarePreference = config.hardwareAcceleration ?? 'no-preference';
 
+    // Set max queue size: use config value, or calculate from dimensions, or use default
+    if (config.maxQueueSize !== undefined) {
+      this._maxQueueSize = config.maxQueueSize;
+    } else if (config.codedWidth && config.codedHeight) {
+      this._maxQueueSize = calculateMaxQueueSize(config.codedWidth, config.codedHeight);
+    } else {
+      this._maxQueueSize = DEFAULT_MAX_QUEUE_SIZE;
+    }
+
     if (config.codedWidth && config.codedHeight) {
       this._startDecoder();
     }
@@ -207,9 +243,9 @@ export class VideoDecoder extends WebCodecsEventTarget {
     }
 
     // Check queue saturation to prevent unbounded memory growth
-    if (this._decodeQueueSize >= MAX_QUEUE_SIZE) {
+    if (this._decodeQueueSize >= this._maxQueueSize) {
       this._safeErrorCallback(new DOMException(
-        `Decoder queue saturated (${MAX_QUEUE_SIZE} chunks pending). Wait for dequeue events before decoding more chunks.`,
+        `Decoder queue saturated (${this._maxQueueSize} chunks pending). Wait for dequeue events before decoding more chunks.`,
         'QuotaExceededError'
       ));
       return;

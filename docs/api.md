@@ -66,6 +66,7 @@ Configure the encoder. Must be called before encoding.
 | `alpha` | 'discard' \| 'keep' | No | Alpha channel handling |
 | `latencyMode` | 'quality' \| 'realtime' | No | Latency vs quality tradeoff |
 | `hardwareAcceleration` | 'no-preference' \| 'prefer-hardware' \| 'prefer-software' | No | Hardware acceleration preference |
+| `maxQueueSize` | number | No | Max pending frames before QuotaExceededError. Auto-calculated from resolution if not set (~300MB target memory). |
 
 #### `encode(frame: VideoFrame, options?: VideoEncoderEncodeOptions): void`
 
@@ -124,6 +125,7 @@ Check if a configuration is supported.
 | `codedWidth` | number | No | Coded frame width |
 | `codedHeight` | number | No | Coded frame height |
 | `description` | BufferSource | No | Codec-specific data (e.g., SPS/PPS for H.264) |
+| `maxQueueSize` | number | No | Max pending chunks before QuotaExceededError. Auto-calculated from resolution if dimensions provided (~300MB target memory). |
 
 #### `decode(chunk: EncodedVideoChunk): void`
 

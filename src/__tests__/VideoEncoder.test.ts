@@ -30,7 +30,7 @@ describe('VideoEncoder', () => {
 
     it('should support VP9', async () => {
       const support = await VideoEncoder.isConfigSupported({
-        codec: 'vp9',
+        codec: 'vp09.00.10.08',
         width: 1920,
         height: 1080,
       });

@@ -659,3 +659,35 @@ export WEBCODECS_CAPABILITIES_PROFILE=$(pwd)/webcodecs-capabilities.json
 ```
 
 The JSON follows the `CapabilityProfile` schema (see `src/capabilities/types.ts`). If no profile is provided, `mediaCapabilities` falls back to built-in heuristics based on resolution, bitrate, and detected hardware acceleration.
+
+---
+
+## Known Limitations
+
+### Encoder Frame Batching
+
+When using `latencyMode: 'quality'` (the default), FFmpeg encoders may buffer frames for better compression. This means:
+
+- Multiple `encode()` calls may produce fewer output chunks than input frames
+- All frames are output after `flush()`, but may be batched
+
+**Workaround:** Use `latencyMode: 'realtime'` for 1:1 frame-to-chunk output:
+
+```typescript
+encoder.configure({
+  codec: 'vp8',
+  width: 640,
+  height: 480,
+  latencyMode: 'realtime', // Disables frame buffering
+});
+```
+
+### Codec String Validation
+
+The `isConfigSupported()` method performs strict codec string validation per the WebCodecs specification:
+
+- **Case-sensitive:** `vP8` or `VP8` returns `supported: false` (use `vp8`)
+- **Fully qualified VP9/AV1:** Ambiguous `vp9` returns `supported: false` (use `vp09.00.10.08`)
+- **Valid parameters:** Unknown profiles/levels return `supported: false`
+
+Note: `configure()` is more lenient and accepts simple codec strings like `vp9` for FFmpeg compatibility.

@@ -53,19 +53,14 @@ export function validateVideoCodec(codec: string): CodecValidationResult {
     return { valid: true, supported: false, error: 'VP8 codec must be lowercase "vp8"' };
   }
 
-  // VP9: fully qualified vp09.PP.LL.DD or simple "vp9"
+  // VP9: must be fully qualified vp09.PP.LL.DD
   if (codec.startsWith('vp09.')) {
     return validateVp9Codec(codec);
   }
 
-  // Simple "vp9" - accepted for FFmpeg compatibility (though spec prefers vp09.xx.xx.xx)
-  if (codec === 'vp9') {
-    return { valid: true, supported: true };
-  }
-
-  // VP9 with wrong casing
-  if (codec.toLowerCase() === 'vp9' && codec !== 'vp9') {
-    return { valid: true, supported: false, error: 'VP9 codec must be lowercase "vp9"' };
+  // Ambiguous "vp9" without profile - not accepted per WebCodecs spec
+  if (codec.toLowerCase() === 'vp9') {
+    return { valid: true, supported: false, error: 'Ambiguous VP9 codec, use vp09.PP.LL.DD format' };
   }
 
   // AV1: av01.P.LLT.DD

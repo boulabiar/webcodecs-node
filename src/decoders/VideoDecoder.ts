@@ -99,6 +99,7 @@ export class VideoDecoder extends WebCodecsEventTarget {
   private _outputFormat: VideoPixelFormat = 'I420';
   private _avcConfig: AvcConfig | null = null;
   private _hevcConfig: HvccConfig | null = null;
+  private _codecBase: string | null = null; // Cached codec base for decode() hot path
   private _hardwarePreference: 'no-preference' | 'prefer-hardware' | 'prefer-software' = 'no-preference';
   private _ondequeue: EventHandler | null = null;
   private _flushPromise: Promise<void> | null = null;
@@ -199,6 +200,7 @@ export class VideoDecoder extends WebCodecsEventTarget {
     this._outputFormat = config.outputFormat ?? 'I420';
     this._state = 'configured';
     this._pendingChunks = [];
+    this._codecBase = getCodecBase(config.codec); // Cache for decode() hot path
     this._avcConfig = this._parseAvcDescription(config);
     this._hevcConfig = this._parseHevcDescription(config);
     this._hardwarePreference = config.hardwareAcceleration ?? 'no-preference';
@@ -261,12 +263,12 @@ export class VideoDecoder extends WebCodecsEventTarget {
 
     let dataToWrite: Buffer | Uint8Array = chunk._buffer;
 
-    const codecBase = this._config ? getCodecBase(this._config.codec) : undefined;
-    if (codecBase) {
-      if (this._avcConfig && (codecBase === 'avc1' || codecBase === 'avc3')) {
+    // Use cached codec base for hot path (avoids getCodecBase() call per chunk)
+    if (this._codecBase) {
+      if (this._avcConfig && (this._codecBase === 'avc1' || this._codecBase === 'avc3')) {
         const includeParameterSets = chunk.type === 'key';
         dataToWrite = convertAvccToAnnexB(chunk._buffer, this._avcConfig, includeParameterSets);
-      } else if (this._hevcConfig && (codecBase === 'hvc1' || codecBase === 'hev1')) {
+      } else if (this._hevcConfig && (this._codecBase === 'hvc1' || this._codecBase === 'hev1')) {
         const includeParameterSets = chunk.type === 'key';
         dataToWrite = convertHvccToAnnexB(chunk._buffer, this._hevcConfig, includeParameterSets);
       }

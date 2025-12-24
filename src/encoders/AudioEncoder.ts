@@ -79,6 +79,8 @@ export class AudioEncoder extends WebCodecsEventTarget {
   private _flushPromise: Promise<void> | null = null;
   /** Actual encoder sample rate (48kHz for Opus, config.sampleRate otherwise) */
   private _encoderSampleRate = 0;
+  /** Cached codec base for hot path */
+  private _codecBase: string | null = null;
 
   constructor(init: AudioEncoderInit) {
     super();
@@ -180,8 +182,9 @@ export class AudioEncoder extends WebCodecsEventTarget {
     this._codecDescription = null;
 
     // Opus always encodes at 48kHz regardless of input sample rate
-    const codecBase = getCodecBase(config.codec);
-    const isOpus = codecBase === 'opus';
+    // Cache codec base for hot path in _onEncoderFrame
+    this._codecBase = getCodecBase(config.codec);
+    const isOpus = this._codecBase === 'opus';
     this._encoderSampleRate = isOpus ? OPUS_ENCODER_SAMPLE_RATE : config.sampleRate;
 
     this._startEncoder();
@@ -384,8 +387,8 @@ export class AudioEncoder extends WebCodecsEventTarget {
     const duration = (samplesPerFrame * 1_000_000) / this._encoderSampleRate;
 
     let payload = frame.data;
-    const codecBase = getCodecBase(this._config.codec);
-    const isAac = codecBase === 'mp4a' || codecBase === 'aac';
+    // Use cached codec base for hot path
+    const isAac = this._codecBase === 'mp4a' || this._codecBase === 'aac';
 
     // Use description from backend if provided (AAC, FLAC, Vorbis, etc.)
     // For AAC, the backend provides proper AudioSpecificConfig with correct channelConfiguration

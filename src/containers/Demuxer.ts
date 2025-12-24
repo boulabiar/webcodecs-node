@@ -101,6 +101,9 @@ export class Demuxer {
   private _audioStreamIndex: number = -1;
   private _videoTimeBase: { num: number; den: number } | null = null;
   private _audioTimeBase: { num: number; den: number } | null = null;
+  // Pre-calculated multipliers for timestamp conversion (avoids division per packet)
+  private _videoTimeMultiplier: number = 0;
+  private _audioTimeMultiplier: number = 0;
 
   constructor(config: DemuxerConfig) {
     this.path = config.path;
@@ -124,6 +127,8 @@ export class Demuxer {
         num: videoStream.timeBase.num,
         den: videoStream.timeBase.den,
       };
+      // Pre-calculate multiplier: (num * 1_000_000) / den
+      this._videoTimeMultiplier = (videoStream.timeBase.num * 1_000_000) / videoStream.timeBase.den;
 
       const cp = videoStream.codecpar;
       this._videoConfig = {
@@ -142,6 +147,8 @@ export class Demuxer {
         num: audioStream.timeBase.num,
         den: audioStream.timeBase.den,
       };
+      // Pre-calculate multiplier: (num * 1_000_000) / den
+      this._audioTimeMultiplier = (audioStream.timeBase.num * 1_000_000) / audioStream.timeBase.den;
 
       const cp = audioStream.codecpar;
       this._audioConfig = {
@@ -182,34 +189,34 @@ export class Demuxer {
   }
 
   /**
-   * Convert timestamp from stream time base to microseconds
+   * Convert timestamp from stream time base to microseconds using pre-calculated multiplier
    */
-  private toMicroseconds(pts: bigint | number, timeBase: { num: number; den: number }): number {
+  private toMicroseconds(pts: bigint | number, multiplier: number): number {
     const ptsNum = typeof pts === 'bigint' ? Number(pts) : pts;
-    return Math.round((ptsNum * timeBase.num * 1_000_000) / timeBase.den);
+    return Math.round(ptsNum * multiplier);
   }
 
   /**
    * Iterate over video chunks
    */
   async *videoChunks(): AsyncGenerator<EncodedVideoChunk> {
-    if (!this.demuxer || this._videoStreamIndex < 0 || !this._videoConfig || !this._videoTimeBase) {
+    if (!this.demuxer || this._videoStreamIndex < 0 || !this._videoConfig || !this._videoTimeMultiplier) {
       return;
     }
 
     for await (const packet of this.demuxer.packets()) {
       if (!packet || !packet.data) continue;
       if (packet.streamIndex === this._videoStreamIndex) {
-        const timestamp = this.toMicroseconds(packet.pts, this._videoTimeBase);
+        const timestamp = this.toMicroseconds(packet.pts, this._videoTimeMultiplier);
         const duration = packet.duration
-          ? this.toMicroseconds(packet.duration, this._videoTimeBase)
+          ? this.toMicroseconds(packet.duration, this._videoTimeMultiplier)
           : undefined;
 
         const chunk = new EncodedVideoChunk({
           type: packet.isKeyframe ? 'key' : 'delta',
           timestamp,
           duration,
-          data: new Uint8Array(packet.data),
+          data: packet.data.slice(),
         });
 
         yield chunk;
@@ -221,23 +228,23 @@ export class Demuxer {
    * Iterate over audio chunks
    */
   async *audioChunks(): AsyncGenerator<EncodedAudioChunk> {
-    if (!this.demuxer || this._audioStreamIndex < 0 || !this._audioConfig || !this._audioTimeBase) {
+    if (!this.demuxer || this._audioStreamIndex < 0 || !this._audioConfig || !this._audioTimeMultiplier) {
       return;
     }
 
     for await (const packet of this.demuxer.packets()) {
       if (!packet || !packet.data) continue;
       if (packet.streamIndex === this._audioStreamIndex) {
-        const timestamp = this.toMicroseconds(packet.pts, this._audioTimeBase);
+        const timestamp = this.toMicroseconds(packet.pts, this._audioTimeMultiplier);
         const duration = packet.duration
-          ? this.toMicroseconds(packet.duration, this._audioTimeBase)
+          ? this.toMicroseconds(packet.duration, this._audioTimeMultiplier)
           : undefined;
 
         const chunk = new EncodedAudioChunk({
           type: packet.isKeyframe ? 'key' : 'delta',
           timestamp,
           duration,
-          data: new Uint8Array(packet.data),
+          data: packet.data.slice(),
         });
 
         yield chunk;
@@ -259,31 +266,31 @@ export class Demuxer {
 
     for await (const packet of this.demuxer.packets()) {
       if (!packet || !packet.data) continue;
-      if (packet.streamIndex === this._videoStreamIndex && this._videoConfig && this._videoTimeBase) {
-        const timestamp = this.toMicroseconds(packet.pts, this._videoTimeBase);
+      if (packet.streamIndex === this._videoStreamIndex && this._videoConfig && this._videoTimeMultiplier) {
+        const timestamp = this.toMicroseconds(packet.pts, this._videoTimeMultiplier);
         const duration = packet.duration
-          ? this.toMicroseconds(packet.duration, this._videoTimeBase)
+          ? this.toMicroseconds(packet.duration, this._videoTimeMultiplier)
           : undefined;
 
         const chunk = new EncodedVideoChunk({
           type: packet.isKeyframe ? 'key' : 'delta',
           timestamp,
           duration,
-          data: new Uint8Array(packet.data),
+          data: packet.data.slice(),
         });
 
         yield { type: 'video', chunk, config: this._videoConfig };
-      } else if (packet.streamIndex === this._audioStreamIndex && this._audioConfig && this._audioTimeBase) {
-        const timestamp = this.toMicroseconds(packet.pts, this._audioTimeBase);
+      } else if (packet.streamIndex === this._audioStreamIndex && this._audioConfig && this._audioTimeMultiplier) {
+        const timestamp = this.toMicroseconds(packet.pts, this._audioTimeMultiplier);
         const duration = packet.duration
-          ? this.toMicroseconds(packet.duration, this._audioTimeBase)
+          ? this.toMicroseconds(packet.duration, this._audioTimeMultiplier)
           : undefined;
 
         const chunk = new EncodedAudioChunk({
           type: packet.isKeyframe ? 'key' : 'delta',
           timestamp,
           duration,
-          data: new Uint8Array(packet.data),
+          data: packet.data.slice(),
         });
 
         yield { type: 'audio', chunk, config: this._audioConfig };

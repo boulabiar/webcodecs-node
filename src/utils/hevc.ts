@@ -73,26 +73,31 @@ export function parseHvccDecoderConfig(data: Uint8Array): HvccConfig {
 
 /**
  * Convert HVCC (length-prefixed) samples to Annex B and optionally add VPS/SPS/PPS.
+ *
+ * Optimized to pre-calculate total size and use single buffer allocation.
  */
 export function convertHvccToAnnexB(
   chunk: Uint8Array,
   config: HvccConfig,
   includeParameterSets: boolean
 ): Buffer {
-  const parts: Buffer[] = [];
+  // First pass: calculate total size needed
+  let totalSize = 0;
 
   if (includeParameterSets) {
     for (const nal of config.vps) {
-      parts.push(START_CODE, Buffer.from(nal));
+      totalSize += 4 + nal.length; // START_CODE (4 bytes) + NAL data
     }
     for (const nal of config.sps) {
-      parts.push(START_CODE, Buffer.from(nal));
+      totalSize += 4 + nal.length;
     }
     for (const nal of config.pps) {
-      parts.push(START_CODE, Buffer.from(nal));
+      totalSize += 4 + nal.length;
     }
   }
 
+  // Collect NAL unit offsets and sizes for the chunk
+  const nalUnits: Array<{ offset: number; size: number }> = [];
   let offset = 0;
   while (offset + config.lengthSize <= chunk.length) {
     let nalSize = 0;
@@ -105,16 +110,48 @@ export function convertHvccToAnnexB(
       break;
     }
 
-    const nal = chunk.subarray(offset, offset + nalSize);
-    parts.push(START_CODE, Buffer.from(nal));
+    nalUnits.push({ offset, size: nalSize });
+    totalSize += 4 + nalSize; // START_CODE + NAL data
     offset += nalSize;
   }
 
-  if (parts.length === 0) {
+  if (totalSize === 0) {
     return Buffer.from(chunk);
   }
 
-  return Buffer.concat(parts);
+  // Second pass: allocate single buffer and copy data
+  const result = Buffer.allocUnsafe(totalSize);
+  let writeOffset = 0;
+
+  if (includeParameterSets) {
+    for (const nal of config.vps) {
+      result.set(START_CODE, writeOffset);
+      writeOffset += 4;
+      result.set(nal, writeOffset);
+      writeOffset += nal.length;
+    }
+    for (const nal of config.sps) {
+      result.set(START_CODE, writeOffset);
+      writeOffset += 4;
+      result.set(nal, writeOffset);
+      writeOffset += nal.length;
+    }
+    for (const nal of config.pps) {
+      result.set(START_CODE, writeOffset);
+      writeOffset += 4;
+      result.set(nal, writeOffset);
+      writeOffset += nal.length;
+    }
+  }
+
+  for (const unit of nalUnits) {
+    result.set(START_CODE, writeOffset);
+    writeOffset += 4;
+    result.set(chunk.subarray(unit.offset, unit.offset + unit.size), writeOffset);
+    writeOffset += unit.size;
+  }
+
+  return result;
 }
 
 function getStartCodeLength(data: Uint8Array, offset: number): number {

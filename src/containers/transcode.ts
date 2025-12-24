@@ -24,7 +24,11 @@ import {
   AV_PIX_FMT_NV12,
 } from 'node-av';
 import { Demuxer } from './Demuxer.js';
-import { StreamCopier } from './Muxer.js';
+import { StreamCopier } from './NodeAvMuxer.js';
+import { inferFormat } from './muxer-types.js';
+import { Logger } from '../utils/logger.js';
+
+const logger = new Logger('Transcode');
 
 /**
  * Video codec options for transcoding
@@ -134,6 +138,209 @@ function getAudioCodecId(codec: AudioCodec): number {
 }
 
 /**
+ * Try to create a hardware context for acceleration
+ * Returns null if hardware acceleration is not available
+ */
+function tryCreateHardwareContext(preference: HardwareAcceleration): HardwareContext | null {
+  if (preference !== 'prefer-hardware') {
+    return null;
+  }
+
+  // Try hardware backends in order of reliability
+  // VAAPI tends to be more stable on Linux than QSV
+  const hwTypesToTry = ['vaapi', 'cuda', 'qsv', 'videotoolbox'];
+  for (const hwType of hwTypesToTry) {
+    try {
+      const hw = HardwareContext.create(hwType as any);
+      logger.info(`Using hardware acceleration: ${hw?.deviceTypeName}`);
+      return hw;
+    } catch {
+      // Try next backend
+    }
+  }
+
+  // Fallback to auto-detection
+  try {
+    const hw = HardwareContext.auto();
+    logger.info(`Using hardware acceleration (auto): ${hw?.deviceTypeName}`);
+    return hw;
+  } catch {
+    logger.info('Hardware acceleration not available, using software');
+    return null;
+  }
+}
+
+/**
+ * Video pipeline configuration result
+ */
+interface VideoPipelineResult {
+  decoder: any;
+  encoder: any;
+  filter: FilterAPI | null;
+  streamIndex: number;
+  usingHardwareDecoder: boolean;
+  usingHardwareEncoder: boolean;
+}
+
+/**
+ * Create video decoder with optional hardware acceleration
+ */
+async function createVideoDecoder(
+  inputStream: any,
+  hardware: HardwareContext | null,
+  codecName: string
+): Promise<{ decoder: any; isHardware: boolean }> {
+  try {
+    const decoder = await NodeAvDecoder.create(inputStream, {
+      hardware: hardware ?? undefined,
+      extraHwFrames: 64,
+    } as any);
+    const isHardware = hardware !== null && decoder.isHardware?.();
+    if (isHardware) {
+      logger.info(`Using hardware decoder for ${codecName}`);
+    }
+    return { decoder, isHardware };
+  } catch (err) {
+    logger.info(`Hardware decoder failed: ${(err as Error).message}, using software`);
+    const decoder = await NodeAvDecoder.create(inputStream);
+    return { decoder, isHardware: false };
+  }
+}
+
+/**
+ * Create video encoder with optional hardware acceleration
+ */
+async function createVideoEncoder(
+  codecId: number,
+  codecName: string,
+  hardware: HardwareContext | null,
+  config: {
+    width: number;
+    height: number;
+    framerate: number;
+    bitrate: number;
+    gopSize: number;
+  }
+): Promise<{ encoder: any; pixelFormat: number; isHardware: boolean }> {
+  let encoderCodec: any = codecId;
+  let pixelFormat = AV_PIX_FMT_YUV420P;
+  let isHardware = false;
+
+  // Try hardware encoder first
+  if (hardware) {
+    try {
+      const hwCodec = hardware.getEncoderCodec(codecName as any);
+      if (hwCodec) {
+        encoderCodec = hwCodec;
+        pixelFormat = AV_PIX_FMT_NV12;
+        isHardware = true;
+        logger.info(`Using hardware encoder for ${codecName}`);
+      }
+    } catch {
+      // Fallback to software encoder
+    }
+  }
+
+  // Create encoder
+  try {
+    const encoder = await NodeAvEncoder.create(encoderCodec, {
+      width: config.width,
+      height: config.height,
+      pixelFormat,
+      timeBase: { num: 1, den: config.framerate },
+      frameRate: { num: config.framerate, den: 1 },
+      bitrate: config.bitrate,
+      gopSize: config.gopSize,
+      hardware: isHardware ? hardware ?? undefined : undefined,
+      extraHwFrames: 64,
+    } as any);
+    return { encoder, pixelFormat, isHardware };
+  } catch (err) {
+    if (!isHardware) throw err;
+
+    // Fallback to software encoder
+    logger.info(`Hardware encoder failed: ${(err as Error).message}, using software`);
+    const encoder = await NodeAvEncoder.create(codecId as any, {
+      width: config.width,
+      height: config.height,
+      pixelFormat: AV_PIX_FMT_YUV420P,
+      timeBase: { num: 1, den: config.framerate },
+      frameRate: { num: config.framerate, den: 1 },
+      bitrate: config.bitrate,
+      gopSize: config.gopSize,
+    } as any);
+    return { encoder, pixelFormat: AV_PIX_FMT_YUV420P, isHardware: false };
+  }
+}
+
+/**
+ * Create video filter for format conversion between decoder and encoder
+ */
+function createVideoFilter(
+  hardware: HardwareContext | null,
+  usingHardwareDecoder: boolean,
+  usingHardwareEncoder: boolean,
+  encoderPixelFormat: number
+): FilterAPI | null {
+  if (!usingHardwareDecoder && !usingHardwareEncoder) {
+    return null;
+  }
+
+  const filterChain = buildTranscodeFilterChain(
+    hardware?.deviceTypeName || 'software',
+    usingHardwareDecoder,
+    usingHardwareEncoder,
+    encoderPixelFormat === AV_PIX_FMT_NV12 ? 'nv12' : 'yuv420p'
+  );
+
+  if (!filterChain) {
+    return null;
+  }
+
+  try {
+    const filter = FilterAPI.create(filterChain, {
+      hardware: hardware ?? undefined,
+    } as any);
+    logger.info(`Using filter chain: ${filterChain}`);
+    return filter;
+  } catch (err) {
+    logger.info(`Filter chain failed, using simple format conversion: ${(err as Error).message}`);
+    return FilterAPI.create(`format=${encoderPixelFormat === AV_PIX_FMT_NV12 ? 'nv12' : 'yuv420p'}`);
+  }
+}
+
+/**
+ * Audio pipeline configuration result
+ */
+interface AudioPipelineResult {
+  decoder: any;
+  encoder: any;
+  streamIndex: number;
+}
+
+/**
+ * Create audio transcoding pipeline
+ */
+async function createAudioPipeline(
+  inputStream: any,
+  muxer: any,
+  options: TranscodeOptions
+): Promise<AudioPipelineResult> {
+  const cp = inputStream.codecpar;
+  const codecId = getAudioCodecId(options.audioCodec || 'aac');
+
+  const decoder = await NodeAvDecoder.create(inputStream);
+  const encoder = await NodeAvEncoder.create(codecId as any, {
+    sampleRate: options.sampleRate || cp.sampleRate,
+    channels: options.numberOfChannels || cp.channels,
+    bitrate: options.audioBitrate || 128_000,
+  } as any);
+
+  const streamIndex = muxer.addStream(encoder);
+  return { decoder, encoder, streamIndex };
+}
+
+/**
  * Build filter chain for transcoding based on hardware configuration
  * Handles: hardware frame download, format conversion, and optionally hardware upload
  */
@@ -180,29 +387,6 @@ function buildTranscodeFilterChain(
   return null;
 }
 
-/**
- * Infer container format from file extension
- */
-function inferFormat(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase();
-  switch (ext) {
-    case 'mp4':
-    case 'm4v':
-      return 'mp4';
-    case 'webm':
-      return 'webm';
-    case 'mkv':
-      return 'matroska';
-    case 'mov':
-      return 'mov';
-    case 'avi':
-      return 'avi';
-    case 'ts':
-      return 'mpegts';
-    default:
-      return 'mp4';
-  }
-}
 
 /**
  * Remux a file from one container format to another without re-encoding
@@ -264,36 +448,10 @@ export async function transcode(
   }
 
   // Setup hardware acceleration if requested
-  const useHardware = options.hardwareAcceleration === 'prefer-hardware';
-  let hardware: HardwareContext | null = null;
+  const hardware = tryCreateHardwareContext(options.hardwareAcceleration || 'no-preference');
   let videoFilter: FilterAPI | null = null;
   let usingHardwareDecoder = false;
   let usingHardwareEncoder = false;
-
-  if (useHardware) {
-    // Try hardware backends in order of reliability
-    // VAAPI tends to be more stable on Linux than QSV
-    const hwTypesToTry = ['vaapi', 'cuda', 'qsv', 'videotoolbox'];
-    for (const hwType of hwTypesToTry) {
-      try {
-        hardware = HardwareContext.create(hwType as any);
-        console.log(`Using hardware acceleration: ${hardware?.deviceTypeName}`);
-        break;
-      } catch {
-        // Try next backend
-      }
-    }
-    if (!hardware) {
-      try {
-        // Fallback to auto-detection
-        hardware = HardwareContext.auto();
-        console.log(`Using hardware acceleration (auto): ${hardware?.deviceTypeName}`);
-      } catch {
-        console.log('Hardware acceleration not available, using software');
-        hardware = null;
-      }
-    }
-  }
 
   // Create output muxer
   const format = options.format || inferFormat(outputPath);
@@ -313,97 +471,29 @@ export async function transcode(
     const outputCodecId = getVideoCodecId(options.videoCodec || 'h264');
     const codecName = options.videoCodec || 'h264';
 
-    // Create decoder with hardware acceleration if available
-    try {
-      videoDecoder = await NodeAvDecoder.create(inputVideo, {
-        hardware: hardware ?? undefined,
-        extraHwFrames: 64, // Allocate extra frames for hardware decoding pipeline
-      } as any);
-      usingHardwareDecoder = hardware !== null && videoDecoder.isHardware?.();
-      if (usingHardwareDecoder) {
-        console.log(`Using hardware decoder for ${codecName}`);
-      }
-    } catch (decErr) {
-      // Fallback to software decoder
-      console.log(`Hardware decoder failed: ${(decErr as Error).message}, using software`);
-      videoDecoder = await NodeAvDecoder.create(inputVideo);
-    }
+    // Create decoder with hardware acceleration
+    const decoderResult = await createVideoDecoder(inputVideo, hardware, codecName);
+    videoDecoder = decoderResult.decoder;
+    usingHardwareDecoder = decoderResult.isHardware;
 
-    // Create encoder with hardware acceleration if available
-    let encoderCodec: any = outputCodecId;
-    let encoderPixelFormat = AV_PIX_FMT_YUV420P;
+    // Create encoder with hardware acceleration
+    const encoderResult = await createVideoEncoder(outputCodecId, codecName, hardware, {
+      width: outputWidth,
+      height: outputHeight,
+      framerate: options.framerate || 30,
+      bitrate: options.videoBitrate || 1_000_000,
+      gopSize: options.gopSize || 30,
+    });
+    videoEncoder = encoderResult.encoder;
+    usingHardwareEncoder = encoderResult.isHardware;
 
-    if (hardware) {
-      try {
-        const hwCodec = hardware.getEncoderCodec(codecName as any);
-        if (hwCodec) {
-          encoderCodec = hwCodec;
-          encoderPixelFormat = AV_PIX_FMT_NV12; // Hardware encoders typically use NV12
-          usingHardwareEncoder = true;
-          console.log(`Using hardware encoder for ${codecName}`);
-        }
-      } catch {
-        // Fallback to software encoder
-      }
-    }
-
-    // Create encoder
-    try {
-      videoEncoder = await NodeAvEncoder.create(encoderCodec, {
-        width: outputWidth,
-        height: outputHeight,
-        pixelFormat: encoderPixelFormat,
-        timeBase: { num: 1, den: options.framerate || 30 },
-        frameRate: { num: options.framerate || 30, den: 1 },
-        bitrate: options.videoBitrate || 1_000_000,
-        gopSize: options.gopSize || 30,
-        hardware: usingHardwareEncoder ? hardware ?? undefined : undefined,
-        extraHwFrames: 64,
-      } as any);
-    } catch (encErr) {
-      // Fallback to software encoder if hardware fails
-      if (usingHardwareEncoder) {
-        console.log(`Hardware encoder failed: ${(encErr as Error).message}, using software`);
-        usingHardwareEncoder = false;
-        encoderPixelFormat = AV_PIX_FMT_YUV420P;
-        videoEncoder = await NodeAvEncoder.create(outputCodecId as any, {
-          width: outputWidth,
-          height: outputHeight,
-          pixelFormat: encoderPixelFormat,
-          timeBase: { num: 1, den: options.framerate || 30 },
-          frameRate: { num: options.framerate || 30, den: 1 },
-          bitrate: options.videoBitrate || 1_000_000,
-          gopSize: options.gopSize || 30,
-        } as any);
-      } else {
-        throw encErr;
-      }
-    }
-
-    // Create video filter for format conversion between decoder and encoder
-    // This handles: hardware frame download, format conversion, and optionally hardware upload
-    // Created AFTER encoder is finalized to know the actual configuration
-    if (usingHardwareDecoder || usingHardwareEncoder) {
-      const filterChain = buildTranscodeFilterChain(
-        hardware?.deviceTypeName || 'software',
-        usingHardwareDecoder,
-        usingHardwareEncoder,
-        encoderPixelFormat === AV_PIX_FMT_NV12 ? 'nv12' : 'yuv420p'
-      );
-
-      if (filterChain) {
-        try {
-          videoFilter = FilterAPI.create(filterChain, {
-            hardware: hardware ?? undefined,
-          } as any);
-          console.log(`Using filter chain: ${filterChain}`);
-        } catch (err) {
-          console.log(`Filter chain failed, using simple format conversion: ${(err as Error).message}`);
-          // Fallback to simple format conversion
-          videoFilter = FilterAPI.create(`format=${encoderPixelFormat === AV_PIX_FMT_NV12 ? 'nv12' : 'yuv420p'}`);
-        }
-      }
-    }
+    // Create video filter for format conversion
+    videoFilter = createVideoFilter(
+      hardware,
+      usingHardwareDecoder,
+      usingHardwareEncoder,
+      encoderResult.pixelFormat
+    );
 
     videoOutStreamIndex = muxer.addStream(videoEncoder);
   } else if (inputVideo && options.videoCodec === 'copy') {
@@ -418,20 +508,10 @@ export async function transcode(
   let audioFrameCount = 0;
 
   if (inputAudio && options.audioCodec !== 'copy') {
-    const cp = inputAudio.codecpar;
-    const outputCodecId = getAudioCodecId(options.audioCodec || 'aac');
-
-    // Create decoder
-    audioDecoder = await NodeAvDecoder.create(inputAudio);
-
-    // Create encoder
-    audioEncoder = await NodeAvEncoder.create(outputCodecId as any, {
-      sampleRate: options.sampleRate || cp.sampleRate,
-      channels: options.numberOfChannels || cp.channels,
-      bitrate: options.audioBitrate || 128_000,
-    } as any);
-
-    audioOutStreamIndex = muxer.addStream(audioEncoder);
+    const audioPipeline = await createAudioPipeline(inputAudio, muxer, options);
+    audioDecoder = audioPipeline.decoder;
+    audioEncoder = audioPipeline.encoder;
+    audioOutStreamIndex = audioPipeline.streamIndex;
   } else if (inputAudio && options.audioCodec === 'copy') {
     // Stream copy audio
     audioOutStreamIndex = muxer.addStream(inputAudio);
@@ -484,7 +564,7 @@ export async function transcode(
             if (!frame) continue;
           } catch (filterErr) {
             // Filter failed, try to continue without it
-            console.warn(`Filter processing failed: ${(filterErr as Error).message}`);
+            logger.warn(`Filter processing failed: ${(filterErr as Error).message}`);
             frame.free();
             continue;
           }

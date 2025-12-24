@@ -367,26 +367,79 @@ encoder.configure({
 
 ### Container Utilities
 
-Import container demuxing/muxing utilities for working with MP4 and WebM files:
+Import container demuxing/muxing utilities for working with MP4, WebM, and MKV files:
 
 ```typescript
-import { Mp4Demuxer, WebmMuxer } from 'webcodecs-node/containers';
+import { Demuxer, Muxer, muxChunks, extractVideoFrames } from 'webcodecs-node/containers';
 
-// Demux an MP4 file
-const demuxer = new Mp4Demuxer(mp4Data);
-await demuxer.initialize();
+// Demux a video file
+const demuxer = new Demuxer({ path: 'input.mp4' });
+await demuxer.open();
 
-for await (const sample of demuxer.videoSamples()) {
-  // sample contains encoded video chunks
+console.log('Video:', demuxer.videoConfig);
+console.log('Audio:', demuxer.audioConfig);
+
+for await (const chunk of demuxer.videoChunks()) {
+  // chunk is EncodedVideoChunk ready for VideoDecoder
 }
+await demuxer.close();
 
-// Mux encoded chunks to WebM
-const muxer = new WebmMuxer({
-  video: { codec: 'vp9', width: 1920, height: 1080 },
+// Mux encoded chunks to a file
+const muxer = new Muxer({ path: 'output.mp4' });
+await muxer.open();
+await muxer.addVideoTrack({
+  codec: 'avc1.42001E',
+  codedWidth: 1920,
+  codedHeight: 1080,
+  description: spsNaluBuffer, // Optional: H.264 SPS/PPS
 });
 
-muxer.addVideoChunk(encodedChunk, metadata);
-const webmData = muxer.finalize();
+for (const chunk of encodedChunks) {
+  await muxer.writeVideoChunk(chunk);
+}
+
+const result = await muxer.closeWithResult();
+console.log(`Muxed with ${result.backend} in ${result.durationMs}ms`);
+
+// Or use the convenience function
+const result = await muxChunks({
+  path: 'output.mp4',
+  video: { config: videoTrackConfig, chunks: videoChunks },
+  audio: { config: audioTrackConfig, chunks: audioChunks },
+});
+
+// Extract decoded frames directly
+for await (const frame of extractVideoFrames('input.mp4')) {
+  console.log(`Frame: ${frame.timestamp}us`);
+  frame.close();
+}
+```
+
+**Muxer Fallback Architecture:**
+
+The `Muxer` class uses a two-tier approach for reliability:
+
+1. **Primary: node-av** (~5ms) - Fast native muxing using node-av's FormatContext API
+2. **Fallback: FFmpeg subprocess** (~130ms) - Spawns FFmpeg process if node-av fails
+
+```typescript
+const muxer = new Muxer({
+  path: 'output.mp4',
+  onFallback: (err) => console.warn('Using FFmpeg fallback:', err.message),
+  forceBackend: 'node-av', // Optional: 'node-av' or 'ffmpeg-spawn'
+});
+```
+
+You can also use the backend-specific classes directly:
+
+```typescript
+import { NodeAvMuxer, FFmpegMuxer } from 'webcodecs-node/containers';
+
+// Fast path only
+const fastMuxer = new NodeAvMuxer({ path: 'output.mp4' });
+
+// FFmpeg subprocess only
+const ffmpegMuxer = new FFmpegMuxer({ path: 'output.mp4' });
 ```
 
 ### Streaming & Latency Modes
@@ -651,6 +704,35 @@ const png = await canvas.toBuffer('png');
 | Maximum quality | Software + `bitrateMode: 'quantizer'` |
 | Batch processing | Hardware for throughput |
 | Low-end systems | Software (more compatible) |
+
+## Debugging
+
+Enable debug logging to troubleshoot encoding/decoding issues:
+
+```bash
+# Enable debug output
+WEBCODECS_DEBUG=1 node your-script.js
+
+# Or set programmatically
+import { setDebugMode } from 'webcodecs-node';
+setDebugMode(true);
+```
+
+Debug mode outputs detailed information about:
+- Hardware acceleration detection and selection
+- Encoder/decoder initialization
+- Muxer backend selection and fallback events
+- Filter chain configuration
+- Error details with context
+
+Example debug output:
+```
+[webcodecs:Transcode] Using hardware acceleration: vaapi
+[webcodecs:Transcode] Using hardware decoder for h264
+[webcodecs:Transcode] Using hardware encoder for h264
+[webcodecs:Transcode] Using filter chain: scale_vaapi=format=nv12
+[webcodecs:NodeAvMuxer] writeTrailer returned error code -22
+```
 
 ## Demos
 

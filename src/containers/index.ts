@@ -6,11 +6,7 @@
  *
  * @example
  * ```typescript
- * import { Demuxer, transcode, getMediaInfo } from 'webcodecs-node/containers';
- *
- * // Get media info
- * const info = await getMediaInfo('video.mp4');
- * console.log(info.video.codec, info.video.width, info.video.height);
+ * import { Demuxer, Muxer, muxChunks } from 'webcodecs-node/containers';
  *
  * // Demux video chunks for WebCodecs processing
  * const demuxer = new Demuxer({ path: 'video.mp4' });
@@ -20,14 +16,20 @@
  * }
  * await demuxer.close();
  *
- * // Transcode to different codec/settings
- * await transcode('input.mp4', 'output.mp4', {
- *   videoCodec: 'h264',
- *   videoBitrate: 1_000_000,
- * });
+ * // Mux encoded chunks to a file (with automatic fallback)
+ * const muxer = new Muxer({ path: 'output.mp4' });
+ * await muxer.open();
+ * await muxer.addVideoTrack({ codec: 'avc1.64001E', ... });
+ * // ... write chunks
+ * const result = await muxer.closeWithResult();
+ * console.log(`Used ${result.backend} in ${result.durationMs}ms`);
  *
- * // Remux to different container (no re-encoding)
- * await remux('input.mp4', 'output.mkv');
+ * // Or use the convenience function
+ * const result = await muxChunks({
+ *   path: 'output.mp4',
+ *   video: { config, chunks },
+ *   audio: { config, chunks },
+ * });
  * ```
  */
 
@@ -41,9 +43,25 @@ export type {
   AudioChunkCallback,
 } from './Demuxer.js';
 
-// Muxer
-export { Muxer, StreamCopier } from './Muxer.js';
-export type { MuxerConfig, VideoTrackConfig, AudioTrackConfig } from './Muxer.js';
+// Muxer types (shared interfaces)
+export type {
+  IMuxer,
+  MuxerConfig,
+  VideoTrackConfig,
+  AudioTrackConfig,
+  MuxResult,
+} from './muxer-types.js';
+export { MuxerError, inferFormat } from './muxer-types.js';
+
+// Main Muxer (with automatic fallback - recommended)
+export { Muxer, muxChunks } from './Muxer.js';
+export type { MuxerOptions } from './Muxer.js';
+
+// Node-av Muxer (fast, direct implementation)
+export { NodeAvMuxer, StreamCopier } from './NodeAvMuxer.js';
+
+// FFmpeg Muxer (subprocess-based, more compatible)
+export { FFmpegMuxer } from './FFmpegMuxer.js';
 
 // Transcoding utilities
 export { remux, transcode, getMediaInfo } from './transcode.js';

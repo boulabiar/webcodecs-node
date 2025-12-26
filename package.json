@@ -1,6 +1,6 @@
 {
   "name": "webcodecs-node",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "WebCodecs API implementation for Node.js using node-av",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

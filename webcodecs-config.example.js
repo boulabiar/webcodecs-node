@@ -5,9 +5,11 @@
  * All settings are optional - commented lines use built-in defaults.
  *
  * You can also set WEBCODECS_CONFIG environment variable to specify a custom path.
+ *
+ * NOTE: Use CommonJS syntax (module.exports) since the config is loaded synchronously.
  */
 
-export default {
+module.exports = {
   // ============================================================================
   // Quality Settings
   // ============================================================================

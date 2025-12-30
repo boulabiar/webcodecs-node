@@ -222,6 +222,7 @@ new AudioDecoder(init: AudioDecoderInit)
 | `sampleRate` | number | Yes | Sample rate in Hz |
 | `numberOfChannels` | number | Yes | Number of channels |
 | `description` | BufferSource | No | Codec-specific data |
+| `outputFormat` | AudioSampleFormat | No | Preferred output sample format (default: 'f32') |
 
 #### `decode(chunk: EncodedAudioChunk): void`
 

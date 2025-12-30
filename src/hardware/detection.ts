@@ -62,8 +62,8 @@ function collectHwaccels(): HardwareAccelerationMethod[] {
           continue;
         } finally {
           // Clean up the test context to avoid resource leaks
-          if (ctx && typeof (ctx as any).unref === 'function') {
-            (ctx as any).unref();
+          if (ctx && typeof (ctx as any).dispose === 'function') {
+            (ctx as any).dispose();
           }
         }
 
